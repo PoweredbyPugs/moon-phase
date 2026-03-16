@@ -1,0 +1,163 @@
+{
+  "id": "obsidian-moon",
+  "name": "Moon Phase",
+  "version": "1.0.0",
+  "minAppVersion": "0.15.0",
+  "description": "Displays current moon phase, sign, planetary positions, and aspects",
+  "author": "poweredbypugs",
+  "isDesktopOnly": false,
+  "authorUrl": "https://github.com/poweredbypugs",
+  "fundingUrl": "",
+  "commands": [
+    {
+      "id": "current-moon-phase",
+      "name": "Current Moon Phase",
+      "icon": "moon"
+    },
+    {
+      "id": "current-moon-degree",
+      "name": "Current Moon Degree",
+      "icon": "moon"
+    },
+    {
+      "id": "weekly-phase",
+      "name": "Weekly Phase",
+      "icon": "calendar-days"
+    },
+    {
+      "id": "planetary-positions",
+      "name": "All Planetary Positions",
+      "icon": "globe"
+    },
+    {
+      "id": "sun-position",
+      "name": "Sun Position",
+      "icon": "sun"
+    },
+    {
+      "id": "moon-position",
+      "name": "Moon Position",
+      "icon": "moon"
+    },
+    {
+      "id": "mercury-position",
+      "name": "Mercury Position",
+      "icon": "circle"
+    },
+    {
+      "id": "venus-position",
+      "name": "Venus Position",
+      "icon": "circle"
+    },
+    {
+      "id": "mars-position",
+      "name": "Mars Position",
+      "icon": "circle"
+    },
+    {
+      "id": "jupiter-position",
+      "name": "Jupiter Position",
+      "icon": "circle"
+    },
+    {
+      "id": "saturn-position",
+      "name": "Saturn Position",
+      "icon": "circle"
+    },
+    {
+      "id": "uranus-position",
+      "name": "Uranus Position",
+      "icon": "circle"
+    },
+    {
+      "id": "neptune-position",
+      "name": "Neptune Position",
+      "icon": "circle"
+    },
+    {
+      "id": "pluto-position",
+      "name": "Pluto Position",
+      "icon": "circle"
+    },
+    {
+      "id": "all-aspects",
+      "name": "All Current Aspects",
+      "icon": "link"
+    },
+    {
+      "id": "sun-aspects",
+      "name": "Sun Aspects",
+      "icon": "sun"
+    },
+    {
+      "id": "moon-aspects",
+      "name": "Moon Aspects",
+      "icon": "moon"
+    },
+    {
+      "id": "mercury-aspects",
+      "name": "Mercury Aspects",
+      "icon": "circle"
+    },
+    {
+      "id": "venus-aspects",
+      "name": "Venus Aspects",
+      "icon": "circle"
+    },
+    {
+      "id": "mars-aspects",
+      "name": "Mars Aspects",
+      "icon": "circle"
+    },
+    {
+      "id": "jupiter-aspects",
+      "name": "Jupiter Aspects",
+      "icon": "circle"
+    },
+    {
+      "id": "saturn-aspects",
+      "name": "Saturn Aspects",
+      "icon": "circle"
+    },
+    {
+      "id": "uranus-aspects",
+      "name": "Uranus Aspects",
+      "icon": "circle"
+    },
+    {
+      "id": "neptune-aspects",
+      "name": "Neptune Aspects",
+      "icon": "circle"
+    },
+    {
+      "id": "pluto-aspects",
+      "name": "Pluto Aspects",
+      "icon": "circle"
+    },
+    {
+      "id": "conjunction-aspects",
+      "name": "Conjunction Aspects",
+      "icon": "circle-dot"
+    },
+    {
+      "id": "opposition-aspects",
+      "name": "Opposition Aspects",
+      "icon": "arrow-right-left"
+    },
+    {
+      "id": "trine-aspects",
+      "name": "Trine Aspects",
+      "icon": "triangle"
+    },
+    {
+      "id": "square-aspects",
+      "name": "Square Aspects",
+      "icon": "square"
+    },
+    {
+      "id": "sextile-aspects",
+      "name": "Sextile Aspects",
+      "icon": "star"
+    }
+  ]
+}

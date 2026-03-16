@@ -1,0 +1,17 @@
+services:
+  sweph-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sweph-server
+    ports:
+      - "3000:3000"
+    volumes:
+      # Optional: For development, mount the source code
+      # - ./server.js:/app/server.js
+      
+      # Optional: Mount ephemeris files from host if you have them locally
+      # - ./ephemeris:/app/ephemeris
+    restart: unless-stopped
+    # Use host network if you're running on the same machine as Obsidian
+    # network_mode: "host"

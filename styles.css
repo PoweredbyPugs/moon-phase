@@ -1,0 +1,9 @@
+.moon-data {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.moon-emoji {
+  font-size: 1.2em;
+}
