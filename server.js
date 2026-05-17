@@ -3,629 +3,548 @@ const cors = require("cors");
 const sweph = require("sweph");
 const moment = require("moment-timezone");
 
+let geoTz = null;
+try { geoTz = require("geo-tz"); } catch (_) { /* optional dep — /timezone-at falls back if missing */ }
+
 const app = express();
 app.use(cors());
+app.use(express.json({ limit: "32kb" }));
 
-// .se1 files in /app/ephemeris
 sweph.set_ephe_path("ephemeris");
 console.log("Ephemeris path set to 'ephemeris'");
 
-// Original /moon-now endpoint - This works accurately
-app.get("/moon-now", (req, res) => {
-  // 1) Get current local time in Eastern Time
-  const localNow = moment.tz("America/New_York");
+const SIGNS = [
+  "Aries", "Taurus", "Gemini", "Cancer",
+  "Leo", "Virgo", "Libra", "Scorpio",
+  "Sagittarius", "Capricorn", "Aquarius", "Pisces",
+];
 
-  // 2) Convert local time to UTC for Swiss Ephemeris
-  const yearUTC = localNow.utc().year();
-  const monthUTC = localNow.utc().month() + 1; // +1 because month() is 0-based
-  const dayUTC = localNow.utc().date();
-  const hourUTC =
-    localNow.utc().hour() +
-    localNow.utc().minute() / 60 +
-    localNow.utc().second() / 3600;
+const PLANETS = [
+  { id: sweph.constants.SE_SUN, name: "Sun" },
+  { id: sweph.constants.SE_MOON, name: "Moon" },
+  { id: sweph.constants.SE_MERCURY, name: "Mercury" },
+  { id: sweph.constants.SE_VENUS, name: "Venus" },
+  { id: sweph.constants.SE_MARS, name: "Mars" },
+  { id: sweph.constants.SE_JUPITER, name: "Jupiter" },
+  { id: sweph.constants.SE_SATURN, name: "Saturn" },
+  { id: sweph.constants.SE_URANUS, name: "Uranus" },
+  { id: sweph.constants.SE_NEPTUNE, name: "Neptune" },
+  { id: sweph.constants.SE_PLUTO, name: "Pluto" },
+];
 
-  console.log(`Local Eastern time: ${localNow.format()} => UTC: ${yearUTC}-${monthUTC}-${dayUTC} ${hourUTC}`);
+const DEFAULT_ASPECTS = [
+  { name: "Conjunction",    symbol: "☌", angle: 0,   orb: 8 },
+  { name: "Sextile",        symbol: "⚹", angle: 60,  orb: 5 },
+  { name: "Square",         symbol: "□", angle: 90,  orb: 7 },
+  { name: "Trine",          symbol: "△", angle: 120, orb: 7 },
+  { name: "Opposition",     symbol: "☍", angle: 180, orb: 8 },
+  { name: "Quincunx",       symbol: "⚻", angle: 150, orb: 3 },
+  { name: "Semi-sextile",   symbol: "⚺", angle: 30,  orb: 2 },
+  { name: "Semi-square",    symbol: "⚼", angle: 45,  orb: 2 },
+  { name: "Sesquiquadrate", symbol: "⚿", angle: 135, orb: 2 },
+  { name: "Quintile",       symbol: "Q", angle: 72,  orb: 2 },
+];
 
-  // 3) Calculate the Moon
-  const jd = sweph.julday(yearUTC, monthUTC, dayUTC, hourUTC, sweph.constants.SE_GREG_CAL);
-  const flags = sweph.constants.SEFLG_SWIEPH;
+const FLAGS = sweph.constants.SEFLG_SWIEPH | sweph.constants.SEFLG_SPEED;
 
-  const moonResult = sweph.calc(jd, sweph.constants.SE_MOON, flags);
-  if (!moonResult || (moonResult.flag !== 0 && moonResult.flag !== 2)) {
-    return res.json({ error: moonResult?.error || "Moon calc error" });
+/* ─────────────────────────────────────────────────────────────────────────
+ * Helpers
+ * ────────────────────────────────────────────────────────────────────── */
+
+function pickTz(req) {
+  const tz = (req.query && req.query.tz) || "America/New_York";
+  return moment.tz.zone(tz) ? tz : "America/New_York";
+}
+
+function nowIn(tz) { return moment.tz(tz); }
+
+function julianDay(m) {
+  const u = m.clone().utc();
+  const hour = u.hour() + u.minute() / 60 + u.second() / 3600;
+  return sweph.julday(u.year(), u.month() + 1, u.date(), hour, sweph.constants.SE_GREG_CAL);
+}
+
+function normalize(angle) {
+  let a = angle % 360;
+  if (a < 0) a += 360;
+  return a;
+}
+
+function signFromLongitude(lon) {
+  const n = normalize(lon);
+  const idx = Math.floor(n / 30);
+  return { sign: SIGNS[idx], degreeInSign: (n % 30).toFixed(2), longitude: n };
+}
+
+function calcPlanet(jd, planet) {
+  const res = sweph.calc(jd, planet.id, FLAGS);
+  if (!res || (res.flag !== 0 && res.flag !== 2)) {
+    throw new Error(`Calc failed for ${planet.name}: ${res && res.error}`);
   }
-  const moonLon = moonResult.data[0]; // ecliptic longitude
+  const lon = res.data[0];
+  const speed = res.data[3];
+  const { sign, degreeInSign, longitude } = signFromLongitude(lon);
+  const isRetrograde = planet.id !== sweph.constants.SE_SUN &&
+                       planet.id !== sweph.constants.SE_MOON &&
+                       speed < 0;
+  return { name: planet.name, sign, degreeInSign, isRetrograde, longitude, speed };
+}
 
-  // 4) Calculate the Sun
-  const sunResult = sweph.calc(jd, sweph.constants.SE_SUN, flags);
-  if (!sunResult || (sunResult.flag !== 0 && sunResult.flag !== 2)) {
-    return res.json({ error: sunResult?.error || "Sun calc error" });
-  }
-  const sunLon = sunResult.data[0];
+function calcAllPlanets(jd) {
+  return PLANETS.map(p => calcPlanet(jd, p));
+}
 
-  // 5) Phase angle = (MoonLon - SunLon) mod 360
-  let phaseAngle = (moonLon - sunLon) % 360;
-  if (phaseAngle < 0) phaseAngle += 360;
+function moonPhaseInfo(m) {
+  const jd = julianDay(m);
+  const moon = calcPlanet(jd, PLANETS[1]);
+  const sun  = calcPlanet(jd, PLANETS[0]);
+  const phaseAngle = normalize(moon.longitude - sun.longitude);
 
-  // Basic 8-phase classification
   let phaseName = "New Moon";
-  if (phaseAngle >= 22.5 && phaseAngle < 67.5) {
-    phaseName = "Waxing Crescent";
-  } else if (phaseAngle >= 67.5 && phaseAngle < 112.5) {
-    phaseName = "First Quarter";
-  } else if (phaseAngle >= 112.5 && phaseAngle < 157.5) {
-    phaseName = "Waxing Gibbous";
-  } else if (phaseAngle >= 157.5 && phaseAngle < 202.5) {
-    phaseName = "Full Moon";
-  } else if (phaseAngle >= 202.5 && phaseAngle < 247.5) {
-    phaseName = "Waning Gibbous";
-  } else if (phaseAngle >= 247.5 && phaseAngle < 292.5) {
-    phaseName = "Last Quarter";
-  } else if (phaseAngle >= 292.5 && phaseAngle < 337.5) {
-    phaseName = "Waning Crescent";
-  }
+  if      (phaseAngle >= 22.5  && phaseAngle < 67.5)  phaseName = "Waxing Crescent";
+  else if (phaseAngle >= 67.5  && phaseAngle < 112.5) phaseName = "First Quarter";
+  else if (phaseAngle >= 112.5 && phaseAngle < 157.5) phaseName = "Waxing Gibbous";
+  else if (phaseAngle >= 157.5 && phaseAngle < 202.5) phaseName = "Full Moon";
+  else if (phaseAngle >= 202.5 && phaseAngle < 247.5) phaseName = "Waning Gibbous";
+  else if (phaseAngle >= 247.5 && phaseAngle < 292.5) phaseName = "Last Quarter";
+  else if (phaseAngle >= 292.5 && phaseAngle < 337.5) phaseName = "Waning Crescent";
 
-  // 6) Find zodiac sign and degree within that sign
-  const signNames = [
-    "Aries", "Taurus", "Gemini", "Cancer",
-    "Leo", "Virgo", "Libra", "Scorpio",
-    "Sagittarius", "Capricorn", "Aquarius", "Pisces"
-  ];
-  const signIndex = Math.floor((moonLon % 360) / 30);
-  const moonSign = signNames[signIndex];
-
-  // e.g. if moonLon=45.2 => 15.2 Taurus
-  const signDegree = (moonLon % 30).toFixed(2);
-
-  // 7) Return JSON
-  res.json({
-    localEasternTime: localNow.format(), // e.g. "2025-03-05T23:18:00-05:00"
-    moonPhase: phaseName,
-    moonSign,
-    degreeInSign: signDegree
-  });
-});
-
-// New endpoint for all planetary positions
-app.get("/planets-now", (req, res) => {
-  try {
-    // 1) Get current local time in Eastern Time
-    const localNow = moment.tz("America/New_York");
-
-    // 2) Convert local time to UTC for Swiss Ephemeris
-    const yearUTC = localNow.utc().year();
-    const monthUTC = localNow.utc().month() + 1; // +1 because month() is 0-based
-    const dayUTC = localNow.utc().date();
-    const hourUTC =
-      localNow.utc().hour() +
-      localNow.utc().minute() / 60 +
-      localNow.utc().second() / 3600;
-
-    console.log(`Local Eastern time: ${localNow.format()} => UTC: ${yearUTC}-${monthUTC}-${dayUTC} ${hourUTC}`);
-
-    // 3) Calculate the Julian Day
-    const jd = sweph.julday(yearUTC, monthUTC, dayUTC, hourUTC, sweph.constants.SE_GREG_CAL);
-    const flags = sweph.constants.SEFLG_SWIEPH;
-
-    // 4) Define planets to calculate
-    const planets = [
-      { id: sweph.constants.SE_SUN, name: "Sun" },
-      { id: sweph.constants.SE_MOON, name: "Moon" },
-      { id: sweph.constants.SE_MERCURY, name: "Mercury" },
-      { id: sweph.constants.SE_VENUS, name: "Venus" },
-      { id: sweph.constants.SE_MARS, name: "Mars" },
-      { id: sweph.constants.SE_JUPITER, name: "Jupiter" },
-      { id: sweph.constants.SE_SATURN, name: "Saturn" },
-      { id: sweph.constants.SE_URANUS, name: "Uranus" },
-      { id: sweph.constants.SE_NEPTUNE, name: "Neptune" },
-      { id: sweph.constants.SE_PLUTO, name: "Pluto" }
-    ];
-
-    // 5) Define zodiac signs
-    const signNames = [
-      "Aries", "Taurus", "Gemini", "Cancer",
-      "Leo", "Virgo", "Libra", "Scorpio", 
-      "Sagittarius", "Capricorn", "Aquarius", "Pisces"
-    ];
-
-    // 6) Calculate positions for all planets
-    const planetaryPositions = planets.map(planet => {
-      const result = sweph.calc(jd, planet.id, flags);
-      
-      if (!result || (result.flag !== 0 && result.flag !== 2)) {
-        console.error(`Error calculating ${planet.name}: ${result?.error || "unknown error"}`);
-        return {
-          name: planet.name,
-          error: result?.error || "Calculation error"
-        };
-      }
-      
-      // Get longitude
-      const longitude = result.data[0];
-      
-      // Calculate sign and degree
-      const signIndex = Math.floor((longitude % 360) / 30);
-      const sign = signNames[signIndex];
-      const degreeInSign = (longitude % 30).toFixed(2);
-      
-      // Check if retrograde (only applicable for planets, not Sun/Moon)
-      const isRetrograde = planet.id !== sweph.constants.SE_SUN && 
-                          planet.id !== sweph.constants.SE_MOON && 
-                          result.data[3] < 0;
-      
-      return {
-        name: planet.name,
-        sign,
-        degreeInSign,
-        isRetrograde
-      };
-    });
-
-    // 7) Return JSON with all planetary positions
-    res.json({
-      localEasternTime: localNow.format(),
-      planets: planetaryPositions
-    });
-    
-  } catch (error) {
-    console.error("Error calculating planetary positions:", error);
-    res.status(500).json({
-      error: "Failed to calculate planetary positions"
-    });
-  }
-});
-
-// Improved /weekly-major-phase endpoint using the same ephemeris approach
-app.get("/weekly-major-phase", (req, res) => {
-  try {
-    console.log("Finding accurate major moon phase for the week using ephemeris");
-    
-    // Get current time
-    const now = moment.tz("America/New_York");
-    
-    // Define current week boundaries (Monday to Sunday)
-    const currentDay = now.day(); // 0 is Sunday, 1 is Monday, etc.
-    const daysToMonday = currentDay === 0 ? 6 : currentDay - 1; // Days back to Monday
-    const mondayDate = moment(now).subtract(daysToMonday, 'days').startOf('day');
-    const sundayDate = moment(mondayDate).add(6, 'days').endOf('day');
-    
-    console.log(`Week range: ${mondayDate.format('YYYY-MM-DD')} to ${sundayDate.format('YYYY-MM-DD')}`);
-    
-    // Get current moon phase info - using the accurate existing method
-    const currentPhaseInfo = getMoonPhaseForDate(now);
-    console.log(`Current moon: ${currentPhaseInfo.moonPhase} in ${currentPhaseInfo.moonSign} (${currentPhaseInfo.phaseAngle}°)`);
-    
-    // Check if we're currently in a major phase
-    if (isMajorPhase(currentPhaseInfo.moonPhase)) {
-      console.log(`Currently in a major phase: ${currentPhaseInfo.moonPhase}`);
-      return res.json({
-        date: now.format('YYYY-MM-DD HH:mm:ss'),
-        moonPhase: currentPhaseInfo.moonPhase,
-        moonSign: currentPhaseInfo.moonSign
-      });
-    }
-    
-    // Find all major phases in the current week
-    const phasesToCheck = [
-      { phase: "New Moon", targetAngle: 0 },
-      { phase: "First Quarter", targetAngle: 90 },
-      { phase: "Full Moon", targetAngle: 180 },
-      { phase: "Last Quarter", targetAngle: 270 }
-    ];
-    
-    // We'll check every 6 hours throughout the week for phase changes
-    // This gives us enough granularity to detect major phases
-    let majorPhasesInWeek = [];
-    let datePointer = moment(mondayDate);
-    
-    // Analysis data for determining closest major phase if none found
-    const angleData = [];
-    
-    while (datePointer.isSameOrBefore(sundayDate)) {
-      const phaseInfo = getMoonPhaseForDate(datePointer);
-      const phaseAngle = parseFloat(phaseInfo.phaseAngle);
-      
-      // Store phase angle for analysis
-      angleData.push({
-        date: datePointer.format('YYYY-MM-DD HH:mm'),
-        angle: phaseAngle,
-        moonSign: phaseInfo.moonSign
-      });
-      
-      // Check if we're at or very near a major phase
-      for (const phaseCheck of phasesToCheck) {
-        // Check if we're within 3 degrees of the target angle
-        // Also handle the case of New Moon (0/360 degrees)
-        let angleDistance;
-        if (phaseCheck.targetAngle === 0) {
-          angleDistance = Math.min(phaseAngle, 360 - phaseAngle);
-        } else {
-          angleDistance = Math.abs(phaseAngle - phaseCheck.targetAngle);
-        }
-        
-        if (angleDistance <= 3) { // Within 3 degrees of major phase
-          console.log(`Found ${phaseCheck.phase} at ${datePointer.format('YYYY-MM-DD HH:mm')} (angle: ${phaseAngle.toFixed(2)}°)`);
-          
-          majorPhasesInWeek.push({
-            date: datePointer.format('YYYY-MM-DD HH:mm:ss'),
-            moonPhase: phaseCheck.phase,
-            moonSign: phaseInfo.moonSign,
-            distance: angleDistance
-          });
-        }
-      }
-      
-      // Move to next 6-hour increment
-      datePointer.add(6, 'hours');
-    }
-    
-    console.log(`Found ${majorPhasesInWeek.length} major phases in the week`);
-    
-    // If we found major phases, return the best one
-    if (majorPhasesInWeek.length > 0) {
-      // First, sort by distance to exact phase
-      majorPhasesInWeek.sort((a, b) => a.distance - b.distance);
-      
-      // Get the most exact phase
-      const exactPhase = majorPhasesInWeek[0];
-      console.log(`Returning exact major phase: ${exactPhase.moonPhase} in ${exactPhase.moonSign}`);
-      
-      return res.json({
-        date: exactPhase.date,
-        moonPhase: exactPhase.moonPhase,
-        moonSign: exactPhase.moonSign
-      });
-    }
-    
-    // If no exact major phases in the week, find the closest upcoming major phase
-    // This approach determines which major phase we're currently progressing toward
-    console.log("No exact major phases this week, finding closest upcoming phase");
-    
-    // Determine the phase we're progressing toward
-    // The moon moves ~12 degrees per day, so we need to find which major phase
-    // is coming up next based on the current phase angle
-    
-    // We've been storing phase angles throughout the week
-    // Sort by time to get the most recent angle
-    angleData.sort((a, b) => moment(b.date).valueOf() - moment(a.date).valueOf());
-    
-    // Get the most recent angle data
-    const latestAngle = angleData[0].angle;
-    const latestSign = angleData[0].moonSign;
-    const latestDate = angleData[0].date;
-    
-    console.log(`Latest angle: ${latestAngle.toFixed(2)}° in ${latestSign} at ${latestDate}`);
-    
-    // Determine which major phase is coming next
-    let nextMajorPhase, nextAngle;
-    if (latestAngle < 90) {
-      nextMajorPhase = "First Quarter";
-      nextAngle = 90;
-    } else if (latestAngle < 180) {
-      nextMajorPhase = "Full Moon";
-      nextAngle = 180;
-    } else if (latestAngle < 270) {
-      nextMajorPhase = "Last Quarter";
-      nextAngle = 270;
-    } else {
-      nextMajorPhase = "New Moon";
-      nextAngle = 360; // Will be treated as 0 in the phase calculation
-    }
-    
-    // Estimate when this phase will occur and in what sign
-    // The moon moves about 12-13 degrees per day through the zodiac
-    // and the phase angle changes at roughly the same rate
-    
-    // Calculate days until the next major phase
-    const degreesToNext = nextAngle - latestAngle;
-    const daysToNext = degreesToNext / 12.2; // Approx degrees per day
-    
-    // Calculate the date of the next major phase
-    const nextPhaseDate = moment(latestDate).add(daysToNext, 'days');
-    
-    // For the sign, we need to estimate how many signs the moon will move through
-    // Each sign is 30 degrees, and the moon moves ~12 degrees per day
-    
-    // Calculate the sign at the next major phase
-    const signNames = [
-      "Aries", "Taurus", "Gemini", "Cancer",
-      "Leo", "Virgo", "Libra", "Scorpio",
-      "Sagittarius", "Capricorn", "Aquarius", "Pisces"
-    ];
-    
-    let signIndex = signNames.indexOf(latestSign);
-    const daysPerSign = 30 / 12.2; // Approx days to move through one sign
-    const signsToMove = Math.floor(daysToNext / daysPerSign);
-    
-    // Calculate new sign index
-    signIndex = (signIndex + signsToMove) % 12;
-    const nextPhaseSign = signNames[signIndex];
-    
-    console.log(`Next major phase: ${nextMajorPhase} estimated at ${nextPhaseDate.format('YYYY-MM-DD HH:mm')} in ${nextPhaseSign}`);
-    
-    // Return the next major phase information
-    return res.json({
-      date: nextPhaseDate.format('YYYY-MM-DD HH:mm:ss'),
-      moonPhase: nextMajorPhase,
-      moonSign: nextPhaseSign
-    });
-    
-  } catch (error) {
-    console.error("Error finding weekly major phase:", error);
-    
-    // Fallback to a safe response based on current phase
-    try {
-      const now = moment.tz("America/New_York");
-      const currentPhase = getMoonPhaseForDate(now);
-      
-      // Convert the current phase to the nearest major phase
-      const phaseAngle = parseFloat(currentPhase.phaseAngle);
-      let majorPhase;
-      
-      if (phaseAngle < 45 || phaseAngle >= 315) {
-        majorPhase = "New Moon";
-      } else if (phaseAngle >= 45 && phaseAngle < 135) {
-        majorPhase = "First Quarter";
-      } else if (phaseAngle >= 135 && phaseAngle < 225) {
-        majorPhase = "Full Moon";
-      } else {
-        majorPhase = "Last Quarter";
-      }
-      
-      return res.json({
-        date: now.format('YYYY-MM-DD HH:mm:ss'),
-        moonPhase: majorPhase,
-        moonSign: currentPhase.moonSign
-      });
-    } catch (e) {
-      console.error("Fallback error:", e);
-      return res.json({
-        error: "Could not determine moon phase"
-      });
-    }
-  }
-});
-
-// Function to get moon phase information for a given date
-function getMoonPhaseForDate(dateTime) {
-  // Convert to UTC for Swiss Ephemeris calculations
-  const yearUTC = dateTime.utc().year();
-  const monthUTC = dateTime.utc().month() + 1; // +1 because month() is 0-based
-  const dayUTC = dateTime.utc().date();
-  const hourUTC =
-    dateTime.utc().hour() +
-    dateTime.utc().minute() / 60 +
-    dateTime.utc().second() / 3600;
-  
-  // Calculate Julian day
-  const jd = sweph.julday(yearUTC, monthUTC, dayUTC, hourUTC, sweph.constants.SE_GREG_CAL);
-  const flags = sweph.constants.SEFLG_SWIEPH;
-  
-  // Calculate Moon position
-  const moonResult = sweph.calc(jd, sweph.constants.SE_MOON, flags);
-  if (!moonResult || (moonResult.flag !== 0 && moonResult.flag !== 2)) {
-    throw new Error(moonResult?.error || "Moon calc error");
-  }
-  const moonLon = moonResult.data[0]; // ecliptic longitude
-  
-  // Calculate Sun position
-  const sunResult = sweph.calc(jd, sweph.constants.SE_SUN, flags);
-  if (!sunResult || (sunResult.flag !== 0 && sunResult.flag !== 2)) {
-    throw new Error(sunResult?.error || "Sun calc error");
-  }
-  const sunLon = sunResult.data[0];
-  
-  // Calculate phase angle
-  let phaseAngle = (moonLon - sunLon) % 360;
-  if (phaseAngle < 0) phaseAngle += 360;
-  
-  // Determine phase name - using the same logic as moon-now
-  let phaseName = "New Moon";
-  if (phaseAngle >= 22.5 && phaseAngle < 67.5) {
-    phaseName = "Waxing Crescent";
-  } else if (phaseAngle >= 67.5 && phaseAngle < 112.5) {
-    phaseName = "First Quarter";
-  } else if (phaseAngle >= 112.5 && phaseAngle < 157.5) {
-    phaseName = "Waxing Gibbous";
-  } else if (phaseAngle >= 157.5 && phaseAngle < 202.5) {
-    phaseName = "Full Moon";
-  } else if (phaseAngle >= 202.5 && phaseAngle < 247.5) {
-    phaseName = "Waning Gibbous";
-  } else if (phaseAngle >= 247.5 && phaseAngle < 292.5) {
-    phaseName = "Last Quarter";
-  } else if (phaseAngle >= 292.5 && phaseAngle < 337.5) {
-    phaseName = "Waning Crescent";
-  }
-  
-  // Calculate zodiac sign
-  const signNames = [
-    "Aries", "Taurus", "Gemini", "Cancer",
-    "Leo", "Virgo", "Libra", "Scorpio",
-    "Sagittarius", "Capricorn", "Aquarius", "Pisces"
-  ];
-  const signIndex = Math.floor((moonLon % 360) / 30);
-  const moonSign = signNames[signIndex];
-  
-  // Calculate degree in sign
-  const signDegree = (moonLon % 30).toFixed(2);
-  
   return {
     moonPhase: phaseName,
-    moonSign,
-    degreeInSign: signDegree,
-    phaseAngle: phaseAngle.toFixed(2)
+    moonSign: moon.sign,
+    degreeInSign: moon.degreeInSign,
+    phaseAngle: phaseAngle.toFixed(2),
+    phaseAngleNum: phaseAngle,
   };
 }
 
-// Helper to check if a phase is a major phase
-function isMajorPhase(phaseName) {
-  return ["New Moon", "Full Moon", "First Quarter", "Last Quarter"].includes(phaseName);
+function isMajorPhase(name) {
+  return name === "New Moon" || name === "Full Moon" ||
+         name === "First Quarter" || name === "Last Quarter";
 }
 
-// Add a simple test endpoint to verify server is running
-app.get("/test", (req, res) => {
+/* Filter helpers: turn query/body params into the planets and aspects lists
+ * actually requested. Falls back to the server defaults if no filter given. */
+
+function filterPlanets(allPlanets, requested) {
+  if (!requested || requested.length === 0) return allPlanets;
+  const set = new Set(requested.map(s => s.toLowerCase()));
+  return allPlanets.filter(p => set.has(p.name.toLowerCase()));
+}
+
+function buildAspectTypes(requestedNames, orbOverrides) {
+  // requestedNames: array of aspect names to include, or null = all defaults
+  // orbOverrides: object like {Conjunction: 8, Trine: 7, ...}
+  const wanted = requestedNames && requestedNames.length
+    ? new Set(requestedNames.map(s => s.toLowerCase()))
+    : null;
+  return DEFAULT_ASPECTS
+    .filter(a => !wanted || wanted.has(a.name.toLowerCase()))
+    .map(a => ({ ...a, orb: orbOverrides[a.name] != null ? Number(orbOverrides[a.name]) : a.orb }));
+}
+
+function parseOrbOverrides(query) {
+  const out = {};
+  for (const key of Object.keys(query || {})) {
+    if (key.startsWith("orb_")) {
+      const name = key.slice(4);
+      const val = parseFloat(query[key]);
+      if (Number.isFinite(val)) out[name] = val;
+    }
+  }
+  return out;
+}
+
+function asList(value) {
+  if (value == null) return null;
+  return Array.isArray(value) ? value : [value];
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * /moon-now — current moon phase + sign + degree
+ * ────────────────────────────────────────────────────────────────────── */
+app.get("/moon-now", (req, res) => {
+  try {
+    const tz = pickTz(req);
+    const now = nowIn(tz);
+    const info = moonPhaseInfo(now);
+    res.json({
+      localTime: now.format(),
+      localEasternTime: now.format(), // back-compat
+      tz,
+      moonPhase: info.moonPhase,
+      moonSign: info.moonSign,
+      degreeInSign: info.degreeInSign,
+    });
+  } catch (err) {
+    console.error("Error in /moon-now:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * /planets-now — current positions of all planets
+ * ────────────────────────────────────────────────────────────────────── */
+app.get("/planets-now", (req, res) => {
+  try {
+    const tz = pickTz(req);
+    const now = nowIn(tz);
+    const jd = julianDay(now);
+    const planets = filterPlanets(calcAllPlanets(jd), asList(req.query.planets))
+      .map(p => ({
+        name: p.name,
+        sign: p.sign,
+        degreeInSign: p.degreeInSign,
+        isRetrograde: p.isRetrograde,
+        longitude: p.longitude,
+      }));
+    res.json({ localTime: now.format(), localEasternTime: now.format(), tz, planets });
+  } catch (err) {
+    console.error("Error in /planets-now:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * /aspects-now — current sky-to-sky aspects with configurable filtering
+ * Query: ?planets=Sun&planets=Moon&aspects=Trine&orb_Trine=6 …
+ * ────────────────────────────────────────────────────────────────────── */
+app.get("/aspects-now", (req, res) => {
+  try {
+    const tz = pickTz(req);
+    const now = nowIn(tz);
+    const jd = julianDay(now);
+
+    const planets = filterPlanets(calcAllPlanets(jd), asList(req.query.planets));
+    const aspectTypes = buildAspectTypes(asList(req.query.aspects), parseOrbOverrides(req.query));
+
+    const aspects = computeAspects(planets, planets, aspectTypes, { sameSet: true });
+    res.json({ localTime: now.format(), localEasternTime: now.format(), tz, aspects });
+  } catch (err) {
+    console.error("Error in /aspects-now:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * /natal-chart — POST with {birth: {date, time, latitude, longitude, timezone}}
+ * Returns planet positions, houses (Placidus by default), ASC, MC.
+ * ────────────────────────────────────────────────────────────────────── */
+app.post("/natal-chart", (req, res) => {
+  try {
+    const birth = (req.body && req.body.birth) || {};
+    const m = birthMoment(birth);
+    const jd = julianDay(m);
+    const planets = calcAllPlanets(jd).map(p => ({
+      name: p.name,
+      sign: p.sign,
+      degreeInSign: p.degreeInSign,
+      isRetrograde: p.isRetrograde,
+      longitude: p.longitude,
+    }));
+
+    let houses = null, ascendant = null, midheaven = null;
+    const hasLocation = Number.isFinite(birth.latitude) && Number.isFinite(birth.longitude);
+    if (hasLocation) {
+      const houseSystem = (req.body && req.body.houseSystem) || "P"; // Placidus
+      const h = sweph.houses(jd, birth.latitude, birth.longitude, houseSystem);
+      if (h && h.data && h.data.houses) {
+        houses = h.data.houses.map((lon, i) => ({
+          house: i + 1,
+          ...signFromLongitude(lon),
+        }));
+        if (h.data.points) {
+          ascendant = signFromLongitude(h.data.points[0]);
+          midheaven = signFromLongitude(h.data.points[1]);
+        }
+      }
+    }
+
+    res.json({
+      birth,
+      utcInstant: m.clone().utc().format(),
+      planets,
+      houses,
+      ascendant,
+      midheaven,
+    });
+  } catch (err) {
+    console.error("Error in /natal-chart:", err);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * /transits-to-natal — POST with {tz, birth, planets?, aspects?}
+ * Returns aspects between CURRENT sky positions (transits) and NATAL positions.
+ * aspects param: [{name: "Conjunction", orb: 6}, ...]
+ * ────────────────────────────────────────────────────────────────────── */
+app.post("/transits-to-natal", (req, res) => {
+  try {
+    const body = req.body || {};
+    const tz = body.tz && moment.tz.zone(body.tz) ? body.tz : "America/New_York";
+    const birth = body.birth || {};
+    const natalMoment = birthMoment(birth);
+    const natalJd = julianDay(natalMoment);
+    const allNatal = calcAllPlanets(natalJd);
+
+    const now = nowIn(tz);
+    const transitJd = julianDay(now);
+    const allTransit = calcAllPlanets(transitJd);
+
+    const requestedPlanets = asList(body.planets);
+    const natalPlanets = filterPlanets(allNatal, requestedPlanets);
+    const transitPlanets = filterPlanets(allTransit, requestedPlanets);
+
+    // aspects can come as ["Conjunction", "Trine"] or [{name,orb}, ...]
+    const requestedAspects = body.aspects;
+    let requestedAspectNames = null;
+    let orbOverrides = {};
+    if (Array.isArray(requestedAspects) && requestedAspects.length) {
+      if (typeof requestedAspects[0] === "string") {
+        requestedAspectNames = requestedAspects;
+      } else {
+        requestedAspectNames = requestedAspects.map(a => a.name).filter(Boolean);
+        for (const a of requestedAspects) {
+          if (a && a.name && Number.isFinite(a.orb)) orbOverrides[a.name] = a.orb;
+        }
+      }
+    }
+    const aspectTypes = buildAspectTypes(requestedAspectNames, orbOverrides);
+
+    const aspects = computeAspects(transitPlanets, natalPlanets, aspectTypes, { sameSet: false })
+      .map(a => ({ ...a, natal: true }));
+
+    res.json({
+      localTime: now.format(),
+      tz,
+      birthInstantUTC: natalMoment.clone().utc().format(),
+      aspects,
+    });
+  } catch (err) {
+    console.error("Error in /transits-to-natal:", err);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * /timezone-at — best-effort IANA timezone for given lat/lng (geo-tz)
+ * ────────────────────────────────────────────────────────────────────── */
+app.get("/timezone-at", (req, res) => {
+  try {
+    const lat = parseFloat(req.query.lat);
+    const lon = parseFloat(req.query.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      return res.status(400).json({ error: "lat and lon required" });
+    }
+    if (!geoTz) {
+      return res.status(501).json({ error: "geo-tz module not installed on server" });
+    }
+    // geo-tz 7+: find()  -> array; geo-tz 8+: same. Older: default export.
+    const finder = geoTz.find || geoTz.default || geoTz;
+    const zones = finder(lat, lon);
+    if (!zones || zones.length === 0) {
+      return res.status(404).json({ error: "No timezone resolved for coordinates" });
+    }
+    res.json({ timezone: zones[0], candidates: zones });
+  } catch (err) {
+    console.error("Error in /timezone-at:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * /weekly-major-phase — exact moment of the next major phase this week
+ * (uses binary search for ~5-minute precision instead of nearest-snap heuristic)
+ * ────────────────────────────────────────────────────────────────────── */
+app.get("/weekly-major-phase", (req, res) => {
+  try {
+    const tz = pickTz(req);
+    const now = nowIn(tz);
+
+    // Monday → Sunday window in user's tz
+    const currentDay = now.day(); // 0=Sun
+    const daysToMonday = currentDay === 0 ? 6 : currentDay - 1;
+    const monday = now.clone().subtract(daysToMonday, "days").startOf("day");
+    const sunday = monday.clone().add(6, "days").endOf("day");
+
+    const phases = findMajorPhasesInRange(monday, sunday);
+    if (phases.length > 0) {
+      // Pick the next one after `now`, falling back to the closest if all are past
+      const future = phases.filter(p => moment.tz(`${p.date} ${p.time}`, "YYYY-MM-DD HH:mm", tz).isSameOrAfter(now));
+      const chosen = future[0] || phases[phases.length - 1];
+      return res.json({
+        date: `${chosen.date} ${chosen.time}:00`,
+        moonPhase: chosen.phase,
+        moonSign: chosen.moonSign,
+        degreeInSign: chosen.degreeInSign,
+      });
+    }
+
+    // No major phase fell in the week — find the next one beyond Sunday
+    const lookahead = sunday.clone().add(14, "days");
+    const future = findMajorPhasesInRange(now, lookahead);
+    if (future.length > 0) {
+      const next = future[0];
+      return res.json({
+        date: `${next.date} ${next.time}:00`,
+        moonPhase: next.phase,
+        moonSign: next.moonSign,
+        degreeInSign: next.degreeInSign,
+      });
+    }
+
+    res.json({});
+  } catch (err) {
+    console.error("Error in /weekly-major-phase:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * /moon-phases — exact major phases between start and end (date strings)
+ * ────────────────────────────────────────────────────────────────────── */
+app.get("/moon-phases", (req, res) => {
+  try {
+    const tz = pickTz(req);
+    const { start, end } = req.query;
+    if (!start || !end) {
+      return res.status(400).json({ error: "start and end query params required (YYYY-MM-DD)" });
+    }
+    const startDate = moment.tz(start, tz).startOf("day");
+    const endDate = moment.tz(end, tz).endOf("day");
+    if (!startDate.isValid() || !endDate.isValid()) {
+      return res.status(400).json({ error: "Invalid date format" });
+    }
+    res.json({ phases: findMajorPhasesInRange(startDate, endDate) });
+  } catch (err) {
+    console.error("Error in /moon-phases:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * /test — health check
+ * ────────────────────────────────────────────────────────────────────── */
+app.get("/test", (_req, res) => {
   res.json({ status: "Server is running correctly" });
 });
 
-// Listen on all network interfaces (0.0.0.0) instead of just localhost
+/* ─────────────────────────────────────────────────────────────────────────
+ * Core: aspect computation (sky-to-sky or transits-to-natal)
+ * ────────────────────────────────────────────────────────────────────── */
+
+function computeAspects(setA, setB, aspectTypes, opts) {
+  const out = [];
+  const sameSet = opts && opts.sameSet;
+  for (let i = 0; i < setA.length; i++) {
+    const a = setA[i];
+    const jStart = sameSet ? i + 1 : 0;
+    for (let j = jStart; j < setB.length; j++) {
+      const b = setB[j];
+      if (sameSet && a.name === b.name) continue;
+
+      let angle = Math.abs(a.longitude - b.longitude) % 360;
+      if (angle > 180) angle = 360 - angle;
+
+      for (const t of aspectTypes) {
+        const diff = Math.abs(angle - t.angle);
+        if (diff <= t.orb) {
+          out.push({
+            planet1: a.name,
+            planet2: b.name,
+            aspectName: t.name,
+            aspectSymbol: t.symbol,
+            exactAngle: angle.toFixed(2),
+            orb: diff.toFixed(2),
+            planet1Sign: a.sign,
+            planet2Sign: b.sign,
+            planet1Retrograde: !!a.isRetrograde,
+            planet2Retrograde: !!b.isRetrograde,
+          });
+          break; // best (first-matching) aspect between this pair
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/* Returns array of {phase, date, time, moonSign, degreeInSign} in start..end.
+ * Coarse 6-hour scan + 12-step binary search → ~5-minute precision. */
+function findMajorPhasesInRange(startMoment, endMoment) {
+  const targets = [
+    { phase: "New Moon", angle: 0 },
+    { phase: "First Quarter", angle: 90 },
+    { phase: "Full Moon", angle: 180 },
+    { phase: "Last Quarter", angle: 270 },
+  ];
+
+  const phases = [];
+  let prev = null;
+  const tz = startMoment.tz();
+  const cursor = startMoment.clone().subtract(1, "day");
+  const stopAt = endMoment.clone().add(1, "day").valueOf();
+
+  while (cursor.valueOf() <= stopAt) {
+    const info = moonPhaseInfo(cursor);
+    const angle = info.phaseAngleNum;
+
+    if (prev !== null) {
+      for (const target of targets) {
+        const crossed = target.angle === 0
+          ? (prev.angle > 300 && angle < 60)
+          : (prev.angle < target.angle && angle >= target.angle);
+        if (!crossed) continue;
+
+        // Binary search for exact crossing within [prev.time, cursor]
+        let lo = prev.time.clone();
+        let hi = cursor.clone();
+        for (let i = 0; i < 14; i++) {
+          const mid = lo.clone().add(hi.diff(lo) / 2, "ms");
+          const midAngle = moonPhaseInfo(mid).phaseAngleNum;
+          const past = target.angle === 0 ? (midAngle < 60) : (midAngle >= target.angle);
+          if (past) hi = mid; else lo = mid;
+        }
+        const exact = hi.tz(tz);
+        if (exact.isSameOrAfter(startMoment) && exact.isSameOrBefore(endMoment)) {
+          const exactInfo = moonPhaseInfo(exact);
+          phases.push({
+            phase: target.phase,
+            date: exact.format("YYYY-MM-DD"),
+            time: exact.format("HH:mm"),
+            moonSign: exactInfo.moonSign,
+            degreeInSign: exactInfo.degreeInSign,
+          });
+        }
+      }
+    }
+
+    prev = { angle, time: cursor.clone() };
+    cursor.add(6, "hours");
+  }
+
+  phases.sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
+  // Dedupe: same date + phase
+  return phases.filter((p, i) =>
+    i === 0 || p.date !== phases[i - 1].date || p.phase !== phases[i - 1].phase);
+}
+
+/* Build a Moment for a birth record: date+time in the birth timezone. */
+function birthMoment(birth) {
+  if (!birth || !birth.date) throw new Error("birth.date is required");
+  const tz = birth.timezone && moment.tz.zone(birth.timezone) ? birth.timezone : "UTC";
+  const time = birth.time || "12:00";
+  const m = moment.tz(`${birth.date} ${time}`, "YYYY-MM-DD HH:mm", tz);
+  if (!m.isValid()) throw new Error("Invalid birth date/time");
+  return m;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Server start
+ * ────────────────────────────────────────────────────────────────────── */
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => {
+app.listen(PORT, "0.0.0.0", () => {
   console.log(`Sweph service listening on port ${PORT} on all interfaces`);
   console.log(`Test the server at: http://localhost:${PORT}/test`);
 });
-
-// Add this new endpoint to your server.js file
-
-// New endpoint for planetary aspects
-app.get("/aspects-now", (req, res) => {
-    try {
-      // 1) Get current local time in Eastern Time
-      const localNow = moment.tz("America/New_York");
-  
-      // 2) Convert local time to UTC for Swiss Ephemeris
-      const yearUTC = localNow.utc().year();
-      const monthUTC = localNow.utc().month() + 1; // +1 because month() is 0-based
-      const dayUTC = localNow.utc().date();
-      const hourUTC =
-        localNow.utc().hour() +
-        localNow.utc().minute() / 60 +
-        localNow.utc().second() / 3600;
-  
-      // 3) Calculate the Julian Day
-      const jd = sweph.julday(yearUTC, monthUTC, dayUTC, hourUTC, sweph.constants.SE_GREG_CAL);
-      const flags = sweph.constants.SEFLG_SWIEPH;
-  
-      // 4) Define planets to calculate
-      const planets = [
-        { id: sweph.constants.SE_SUN, name: "Sun" },
-        { id: sweph.constants.SE_MOON, name: "Moon" },
-        { id: sweph.constants.SE_MERCURY, name: "Mercury" },
-        { id: sweph.constants.SE_VENUS, name: "Venus" },
-        { id: sweph.constants.SE_MARS, name: "Mars" },
-        { id: sweph.constants.SE_JUPITER, name: "Jupiter" },
-        { id: sweph.constants.SE_SATURN, name: "Saturn" },
-        { id: sweph.constants.SE_URANUS, name: "Uranus" },
-        { id: sweph.constants.SE_NEPTUNE, name: "Neptune" },
-        { id: sweph.constants.SE_PLUTO, name: "Pluto" }
-      ];
-  
-      // 5) Define zodiac signs (for reference)
-      const signNames = [
-        "Aries", "Taurus", "Gemini", "Cancer",
-        "Leo", "Virgo", "Libra", "Scorpio", 
-        "Sagittarius", "Capricorn", "Aquarius", "Pisces"
-      ];
-  
-      // 6) Define aspects with their angles and orbs
-      const aspectTypes = [
-        { name: "Conjunction", symbol: "☌", angle: 0, orb: 8 },
-        { name: "Sextile", symbol: "⚹", angle: 60, orb: 6 },
-        { name: "Square", symbol: "□", angle: 90, orb: 8 },
-        { name: "Trine", symbol: "△", angle: 120, orb: 8 },
-        { name: "Opposition", symbol: "☍", angle: 180, orb: 10 },
-        { name: "Quincunx", symbol: "⚻", angle: 150, orb: 3 },
-        { name: "Semi-sextile", symbol: "⚺", angle: 30, orb: 3 },
-        { name: "Semi-square", symbol: "⚼", angle: 45, orb: 3 },
-        { name: "Sesquiquadrate", symbol: "⚿", angle: 135, orb: 3 },
-        { name: "Quintile", symbol: "Q", angle: 72, orb: 2 } // Unicode alternatives: ⊥ or ⊻
-      ];
-  
-      // 7) Calculate positions for all planets
-      const planetaryPositions = [];
-      
-      for (const planet of planets) {
-        const result = sweph.calc(jd, planet.id, flags);
-        
-        if (!result || (result.flag !== 0 && result.flag !== 2)) {
-          console.error(`Error calculating ${planet.name}: ${result?.error || "unknown error"}`);
-          continue;
-        }
-        
-        // Get longitude
-        const longitude = result.data[0];
-        
-        // Calculate sign and degree
-        const signIndex = Math.floor((longitude % 360) / 30);
-        const sign = signNames[signIndex];
-        const degreeInSign = (longitude % 30).toFixed(2);
-        
-        // Check if retrograde (only applicable for planets, not Sun/Moon)
-        const isRetrograde = planet.id !== sweph.constants.SE_SUN && 
-                            planet.id !== sweph.constants.SE_MOON && 
-                            result.data[3] < 0;
-        
-        planetaryPositions.push({
-          name: planet.name,
-          longitude,
-          sign,
-          degreeInSign,
-          isRetrograde
-        });
-      }
-  
-      // 8) Calculate aspects between all planets
-      const aspects = [];
-      
-      for (let i = 0; i < planetaryPositions.length; i++) {
-        for (let j = i + 1; j < planetaryPositions.length; j++) {
-          const planet1 = planetaryPositions[i];
-          const planet2 = planetaryPositions[j];
-          
-          // Calculate angle between planets (smallest angle)
-          let angle = Math.abs(planet1.longitude - planet2.longitude) % 360;
-          if (angle > 180) angle = 360 - angle;
-          
-          // Check if this angle corresponds to a known aspect
-          for (const aspectType of aspectTypes) {
-            const difference = Math.abs(angle - aspectType.angle);
-            
-            if (difference <= aspectType.orb) {
-              // This is a valid aspect
-              aspects.push({
-                planet1: planet1.name,
-                planet2: planet2.name,
-                aspectName: aspectType.name,
-                aspectSymbol: aspectType.symbol,
-                exactAngle: angle.toFixed(2),
-                orb: difference.toFixed(2),
-                planet1Sign: planet1.sign,
-                planet2Sign: planet2.sign,
-                planet1Retrograde: planet1.isRetrograde,
-                planet2Retrograde: planet2.isRetrograde
-              });
-              break; // Only count the most precise aspect between two planets
-            }
-          }
-        }
-      }
-  
-      // 9) Return JSON with all aspects
-      res.json({
-        localEasternTime: localNow.format(),
-        aspects
-      });
-      
-    } catch (error) {
-      console.error("Error calculating planetary aspects:", error);
-      res.status(500).json({
-        error: "Failed to calculate planetary aspects"
-      });
-    }
-  });
-  
-  // Helper function to get aspect symbol
-  function getAspectSymbol(aspectName) {
-    const aspectSymbols = {
-      "Conjunction": "☌",
-      "Opposition": "☍",
-      "Trine": "△",
-      "Square": "□", 
-      "Sextile": "⚹",
-      "Quincunx": "⚻",
-      "Semi-sextile": "⚺",
-      "Semi-square": "⚼",
-      "Sesquiquadrate": "⚿"
-    };
-    
-    return aspectSymbols[aspectName] || aspectName;
-  }

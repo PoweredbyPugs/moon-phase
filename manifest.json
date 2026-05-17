@@ -1,9 +1,9 @@
 {
   "id": "obsidian-moon",
   "name": "Moon Phase",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "minAppVersion": "0.15.0",
-  "description": "Displays current moon phase, sign, planetary positions, and aspects",
+  "description": "Moon phase, planetary positions, aspects, and natal-chart transits via a local Swiss Ephemeris server",
   "author": "poweredbypugs",
   "isDesktopOnly": false,
   "authorUrl": "https://github.com/poweredbypugs",

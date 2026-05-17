@@ -7,3 +7,107 @@
 .moon-emoji {
   font-size: 1.2em;
 }
+
+/* ── Tabbed settings ── */
+.moon-tab-bar {
+  display: flex;
+  gap: 0;
+  margin: 12px 0 16px;
+  border-bottom: 2px solid var(--background-modifier-border);
+}
+
+.moon-tab {
+  padding: 8px 20px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  background: none;
+  cursor: pointer;
+  font-weight: 500;
+  color: var(--text-muted);
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.moon-tab:hover {
+  color: var(--text-normal);
+}
+
+.moon-tab.moon-tab-active {
+  color: var(--text-normal);
+  border-bottom-color: var(--interactive-accent);
+}
+
+.moon-tab-content {
+  padding-top: 8px;
+}
+
+.moon-tab-intro {
+  color: var(--text-muted);
+  font-size: 0.9em;
+  max-width: 60ch;
+  margin-top: 0;
+}
+
+/* ── Birth chart inputs ── */
+.moon-loc-wrap {
+  margin-bottom: 4px;
+}
+
+.moon-loc-results {
+  margin: 0 0 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.moon-loc-results:empty {
+  display: none;
+}
+
+.moon-loc-row {
+  padding: 8px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--background-modifier-border);
+  font-size: 0.9em;
+}
+
+.moon-loc-row:last-child {
+  border-bottom: none;
+}
+
+.moon-loc-row:hover {
+  background: var(--background-modifier-hover);
+}
+
+.moon-loc-loading,
+.moon-loc-empty,
+.moon-loc-error {
+  padding: 8px 12px;
+  font-size: 0.85em;
+  color: var(--text-muted);
+}
+
+.moon-loc-error {
+  color: var(--text-error);
+}
+
+.moon-birth-actions {
+  margin-top: 16px;
+}
+
+/* ── Aspect rows ── */
+.moon-aspect-row .setting-item {
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.moon-aspect-row:last-child .setting-item {
+  border-bottom: none;
+}
+
+.moon-test-wrap {
+  margin-top: 16px;
+  padding-top: 8px;
+  border-top: 1px solid var(--background-modifier-border);
+}
