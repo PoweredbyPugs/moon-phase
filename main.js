@@ -28,6 +28,8 @@ __export(main_exports, {
 });
 module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
+
+// src/types.ts
 var PLANETS = [
   "Sun",
   "Moon",
@@ -64,72 +66,264 @@ var ASPECT_SYMBOLS = {
   "Sesquiquadrate": "\u26BF",
   "Quintile": "Q"
 };
-var DEFAULT_ORBS = {
-  "Conjunction": 8,
-  "Opposition": 8,
-  "Trine": 7,
-  "Square": 7,
-  "Sextile": 5,
-  "Quincunx": 3,
-  "Semi-sextile": 2,
-  "Semi-square": 2,
-  "Sesquiquadrate": 2,
-  "Quintile": 2
+var PLANET_GLYPHS = {
+  Sun: "\u2609",
+  Moon: "\u263D",
+  Mercury: "\u263F",
+  Venus: "\u2640",
+  Mars: "\u2642",
+  Jupiter: "\u2643",
+  Saturn: "\u2644",
+  Uranus: "\u2645",
+  Neptune: "\u2646",
+  Pluto: "\u2647",
+  "North Node": "\u260A",
+  "South Node": "\u260B",
+  Chiron: "\u26B7",
+  Ascendant: "ASC",
+  Midheaven: "MC"
+};
+var MOON_PHASE_EMOJI = {
+  "New Moon": "\u{1F311}",
+  "Waxing Crescent": "\u{1F312}",
+  "First Quarter": "\u{1F313}",
+  "Waxing Gibbous": "\u{1F314}",
+  "Full Moon": "\u{1F315}",
+  "Waning Gibbous": "\u{1F316}",
+  "Last Quarter": "\u{1F317}",
+  "Waning Crescent": "\u{1F318}"
 };
 var DEFAULT_SETTINGS = {
   serverUrl: "http://localhost:3000",
-  timezone: typeof Intl !== "undefined" ? Intl.DateTimeFormat().resolvedOptions().timeZone : "UTC",
+  selectedChart: "",
   useNatalChart: false,
-  birth: {
-    date: "",
-    time: "12:00",
-    locationName: "",
-    latitude: 0,
-    longitude: 0,
-    timezone: typeof Intl !== "undefined" ? Intl.DateTimeFormat().resolvedOptions().timeZone : "UTC"
-  },
+  majorOnly: true,
+  natalOrb: 8,
   planets: {
-    "Sun": true,
-    "Moon": true,
-    "Mercury": true,
-    "Venus": true,
-    "Mars": true,
-    "Jupiter": true,
-    "Saturn": true,
-    "Uranus": true,
-    "Neptune": true,
-    "Pluto": true
+    Sun: true,
+    Moon: true,
+    Mercury: true,
+    Venus: true,
+    Mars: true,
+    Jupiter: true,
+    Saturn: true,
+    Uranus: true,
+    Neptune: true,
+    Pluto: true
   },
   aspects: {
-    "Conjunction": true,
-    "Opposition": true,
-    "Trine": true,
-    "Square": true,
-    "Sextile": true,
-    "Quincunx": false,
+    Conjunction: true,
+    Opposition: true,
+    Trine: true,
+    Square: true,
+    Sextile: true,
+    Quincunx: false,
     "Semi-sextile": false,
     "Semi-square": false,
-    "Sesquiquadrate": false,
-    "Quintile": false
-  },
-  orbs: { ...DEFAULT_ORBS }
+    Sesquiquadrate: false,
+    Quintile: false
+  }
 };
+
+// src/pure.ts
+function normalizeBaseUrl(url) {
+  return (url || "").trim().replace(/\/+$/, "");
+}
+function joinUrl(base, path) {
+  const b = normalizeBaseUrl(base);
+  const p = "/" + (path || "").replace(/^\/+/, "");
+  return b + p;
+}
+function migrateSettings(raw) {
+  if (!raw || typeof raw !== "object")
+    return { ...DEFAULT_SETTINGS };
+  const looksV2 = raw.planets || raw.aspects || raw.selectedChart !== void 0;
+  if (looksV2) {
+    return {
+      ...DEFAULT_SETTINGS,
+      ...raw,
+      planets: { ...DEFAULT_SETTINGS.planets, ...raw.planets || {} },
+      aspects: { ...DEFAULT_SETTINGS.aspects, ...raw.aspects || {} }
+    };
+  }
+  const planetMap = {
+    enableSun: "Sun",
+    enableMoon: "Moon",
+    enableMercury: "Mercury",
+    enableVenus: "Venus",
+    enableMars: "Mars",
+    enableJupiter: "Jupiter",
+    enableSaturn: "Saturn",
+    enableUranus: "Uranus",
+    enableNeptune: "Neptune",
+    enablePluto: "Pluto"
+  };
+  const aspectMap = {
+    enableConjunction: "Conjunction",
+    enableOpposition: "Opposition",
+    enableTrine: "Trine",
+    enableSquare: "Square",
+    enableSextile: "Sextile",
+    enableQuincunx: "Quincunx",
+    enableSemiSextile: "Semi-sextile",
+    enableSemiSquare: "Semi-square",
+    enableSesquiquadrate: "Sesquiquadrate",
+    enableQuintile: "Quintile"
+  };
+  const planets = { ...DEFAULT_SETTINGS.planets };
+  for (const [k, v] of Object.entries(planetMap)) {
+    if (typeof raw[k] === "boolean")
+      planets[v] = raw[k];
+  }
+  const aspects = { ...DEFAULT_SETTINGS.aspects };
+  for (const [k, v] of Object.entries(aspectMap)) {
+    if (typeof raw[k] === "boolean")
+      aspects[v] = raw[k];
+  }
+  return {
+    ...DEFAULT_SETTINGS,
+    serverUrl: typeof raw.serverUrl === "string" ? raw.serverUrl : DEFAULT_SETTINGS.serverUrl,
+    planets,
+    aspects
+  };
+}
+function enabledPlanetNames(settings) {
+  return PLANETS.filter((p) => settings.planets[p]);
+}
+function enabledAspectNames(settings) {
+  return ASPECTS.filter((a) => settings.aspects[a]);
+}
+function filterSkyAspects(aspects, settings) {
+  const enabledPlanets = new Set(enabledPlanetNames(settings));
+  const enabledAspects = new Set(enabledAspectNames(settings));
+  return aspects.filter((a) => enabledPlanets.has(a.planet1) && enabledPlanets.has(a.planet2) && enabledAspects.has(a.aspectName));
+}
+var NATAL_ASPECT_MAP = {
+  "conjunction": "Conjunction",
+  "opposition": "Opposition",
+  "trine": "Trine",
+  "square": "Square",
+  "sextile": "Sextile",
+  "quincunx": "Quincunx",
+  "semi-sextile": "Semi-sextile",
+  "semisextile": "Semi-sextile",
+  "semi-square": "Semi-square",
+  "semisquare": "Semi-square",
+  "sesquiquadrate": "Sesquiquadrate",
+  "quintile": "Quintile"
+};
+function natalAspectName(raw) {
+  var _a;
+  if (!raw)
+    return null;
+  return (_a = NATAL_ASPECT_MAP[raw.toLowerCase()]) != null ? _a : null;
+}
+function natalTransitToSkyAspect(t) {
+  var _a, _b;
+  const aspectName = natalAspectName(t.aspect);
+  if (!aspectName)
+    return null;
+  const natalLabel = (_b = (_a = t.natal.planet) != null ? _a : t.natal.point) != null ? _b : "Natal";
+  return {
+    planet1: t.transit.planet,
+    planet2: natalLabel,
+    aspectName,
+    aspectSymbol: t.symbol || ASPECT_SYMBOLS[aspectName],
+    exactAngle: "",
+    orb: t.orb,
+    planet1Sign: t.transit.sign,
+    planet2Sign: t.natal.sign,
+    planet1Retrograde: !!t.transit.isRetrograde,
+    planet2Retrograde: false
+  };
+}
+function filterNatalTransits(transits, settings) {
+  const enabledPlanets = new Set(enabledPlanetNames(settings));
+  const enabledAspects = new Set(enabledAspectNames(settings));
+  const out = [];
+  for (const t of transits) {
+    if (!enabledPlanets.has(t.transit.planet))
+      continue;
+    const mapped = natalTransitToSkyAspect(t);
+    if (!mapped)
+      continue;
+    if (!enabledAspects.has(mapped.aspectName))
+      continue;
+    out.push(mapped);
+  }
+  return out;
+}
+function natalTransitQuery(settings) {
+  const params = new URLSearchParams();
+  if (settings.majorOnly)
+    params.set("major", "true");
+  if (Number.isFinite(settings.natalOrb))
+    params.set("orb", String(settings.natalOrb));
+  const qs = params.toString();
+  return qs ? `?${qs}` : "";
+}
+function buildGenerateChartBody(input) {
+  if (!input.name)
+    throw new Error("Chart name is required");
+  if (!input.date)
+    throw new Error("Birth date is required");
+  if (!input.time)
+    throw new Error("Birth time is required");
+  const [y, m, d] = input.date.split("-").map(Number);
+  const [hh, mm] = input.time.split(":").map(Number);
+  if (![y, m, d, hh, mm].every(Number.isFinite)) {
+    throw new Error("Invalid date or time");
+  }
+  return {
+    name: input.name,
+    year: y,
+    month: m,
+    day: d,
+    hour: hh,
+    minute: mm,
+    latitude: input.latitude,
+    longitude: input.longitude,
+    timezone: input.timezone,
+    save: input.save !== false
+  };
+}
+function moonPhaseEmoji(phase) {
+  var _a;
+  return (_a = MOON_PHASE_EMOJI[phase]) != null ? _a : "\u{1F319}";
+}
+function planetGlyph(name) {
+  var _a;
+  return (_a = PLANET_GLYPHS[name]) != null ? _a : "\u2605";
+}
+function formatPlanetLine(p) {
+  const retro = p.isRetrograde ? " \u211E" : "";
+  return `${planetGlyph(p.name)} ${p.sign} ${p.degreeInSign}\u02DA${retro}`;
+}
+function formatSkyAspectLine(a) {
+  const g1 = planetGlyph(a.planet1);
+  const g2 = planetGlyph(a.planet2);
+  const r1 = a.planet1Retrograde ? " \u211E" : "";
+  const r2 = a.planet2Retrograde ? " \u211E" : "";
+  return `${g1}${r1} ${a.aspectSymbol} ${g2}${r2}`;
+}
+
+// main.ts
 var MoonPlugin = class extends import_obsidian.Plugin {
   constructor() {
     super(...arguments);
-    // Public API surface — bound so Templater can call them via window.MoonPhasePlugin
     this.api = {
       getMoonData: this.getMoonData.bind(this),
-      getMoonPhaseEmoji: this.getMoonPhaseEmoji.bind(this),
+      getMoonPhaseEmoji: moonPhaseEmoji,
+      getPlanetGlyph: planetGlyph,
       getCurrentMoonPhase: this.getCurrentMoonPhase.bind(this),
       getCurrentMoonDegree: this.getCurrentMoonDegree.bind(this),
       getWeeklyPhase: this.getWeeklyPhase.bind(this),
       getWeeklyMajorPhase: this.getWeeklyMajorPhase.bind(this),
       getPlanetaryData: this.getPlanetaryData.bind(this),
-      getPlanetGlyph: this.getPlanetGlyph.bind(this),
       getAspectsData: this.getAspectsData.bind(this),
-      getTransitsToNatal: this.getTransitsToNatal.bind(this),
-      getNatalChart: this.getNatalChart.bind(this)
+      getNatalTransits: this.getNatalTransits.bind(this),
+      getNatalChart: this.getNatalChart.bind(this),
+      listSavedCharts: this.listSavedCharts.bind(this)
     };
   }
   async onload() {
@@ -162,8 +356,7 @@ var MoonPlugin = class extends import_obsidian.Plugin {
       name: "All Planetary Positions",
       editorCallback: (editor) => {
         this.getPlanetaryData().then((data) => {
-          const output = data.planets.map((p) => this.formatPlanetLine(p)).join("\n");
-          editor.replaceSelection(output);
+          editor.replaceSelection(data.planets.map(formatPlanetLine).join("\n"));
         }).catch((err) => this.handleError(editor, "planetary data", err));
       }
     });
@@ -174,10 +367,7 @@ var MoonPlugin = class extends import_obsidian.Plugin {
         editorCallback: (editor) => {
           this.getPlanetaryData().then((data) => {
             const planet = data.planets.find((p) => p.name === planetName);
-            if (planet)
-              editor.replaceSelection(this.formatPlanetLine(planet));
-            else
-              editor.replaceSelection(`Error: ${planetName} data not found`);
+            editor.replaceSelection(planet ? formatPlanetLine(planet) : `Error: ${planetName} data not found`);
           }).catch((err) => this.handleError(editor, `${planetName} data`, err));
         }
       });
@@ -186,12 +376,12 @@ var MoonPlugin = class extends import_obsidian.Plugin {
       id: "all-aspects",
       name: "All Current Aspects",
       editorCallback: (editor) => {
-        this.getAspectsData().then((data) => {
-          if (data.aspects.length === 0) {
+        this.getEffectiveAspects().then((aspects) => {
+          if (aspects.length === 0) {
             editor.replaceSelection("No significant aspects currently.");
             return;
           }
-          editor.replaceSelection(data.aspects.map((a) => this.formatAspectLine(a)).join("\n"));
+          editor.replaceSelection(aspects.map(formatSkyAspectLine).join("\n"));
         }).catch((err) => this.handleError(editor, "aspects data", err));
       }
     });
@@ -200,16 +390,16 @@ var MoonPlugin = class extends import_obsidian.Plugin {
         id: `${planetName.toLowerCase()}-aspects`,
         name: `${planetName} Aspects`,
         editorCallback: (editor) => {
-          this.getAspectsData().then((data) => {
-            const relevant = data.aspects.filter(
-              (a) => a.planet1 === planetName || a.planet2 === planetName
-            );
+          this.getEffectiveAspects().then((aspects) => {
+            const relevant = aspects.filter((a) => a.planet1 === planetName || a.planet2 === planetName);
             if (relevant.length === 0) {
               editor.replaceSelection(`No significant aspects for ${planetName} currently.`);
               return;
             }
-            const output = relevant.map((a) => {
-              const reordered = a.planet1 === planetName ? a : {
+            const out = relevant.map((a) => {
+              if (a.planet1 === planetName)
+                return formatSkyAspectLine(a);
+              return formatSkyAspectLine({
                 ...a,
                 planet1: a.planet2,
                 planet2: a.planet1,
@@ -217,10 +407,9 @@ var MoonPlugin = class extends import_obsidian.Plugin {
                 planet2Sign: a.planet1Sign,
                 planet1Retrograde: a.planet2Retrograde,
                 planet2Retrograde: a.planet1Retrograde
-              };
-              return this.formatAspectLine(reordered);
+              });
             }).join("\n");
-            editor.replaceSelection(output);
+            editor.replaceSelection(out);
           }).catch((err) => this.handleError(editor, `${planetName} aspects`, err));
         }
       });
@@ -230,13 +419,13 @@ var MoonPlugin = class extends import_obsidian.Plugin {
         id: `${aspectName.toLowerCase()}-aspects`,
         name: `${aspectName} Aspects`,
         editorCallback: (editor) => {
-          this.getAspectsData().then((data) => {
-            const relevant = data.aspects.filter((a) => a.aspectName === aspectName);
+          this.getEffectiveAspects().then((aspects) => {
+            const relevant = aspects.filter((a) => a.aspectName === aspectName);
             if (relevant.length === 0) {
               editor.replaceSelection(`No ${aspectName} aspects currently.`);
               return;
             }
-            editor.replaceSelection(relevant.map((a) => this.formatAspectLine(a)).join("\n"));
+            editor.replaceSelection(relevant.map(formatSkyAspectLine).join("\n"));
           }).catch((err) => this.handleError(editor, `${aspectName} aspects`, err));
         }
       });
@@ -248,70 +437,17 @@ var MoonPlugin = class extends import_obsidian.Plugin {
     } catch (e) {
     }
   }
-  /* ── Settings IO + migration from v1 (flat enableX fields) ── */
+  /* ── Settings IO ── */
   async loadSettings() {
-    const raw = await this.loadData() || {};
-    const migrated = this.migrate(raw);
-    this.settings = {
-      ...DEFAULT_SETTINGS,
-      ...migrated,
-      birth: { ...DEFAULT_SETTINGS.birth, ...migrated.birth || {} },
-      planets: { ...DEFAULT_SETTINGS.planets, ...migrated.planets || {} },
-      aspects: { ...DEFAULT_SETTINGS.aspects, ...migrated.aspects || {} },
-      orbs: { ...DEFAULT_SETTINGS.orbs, ...migrated.orbs || {} }
-    };
-  }
-  migrate(raw) {
-    var _a;
-    if (raw.planets || raw.aspects || raw.orbs || raw.birth)
-      return raw;
-    const out = {
-      serverUrl: (_a = raw.serverUrl) != null ? _a : DEFAULT_SETTINGS.serverUrl,
-      planets: {},
-      aspects: {}
-    };
-    const mapPlanet = {
-      enableSun: "Sun",
-      enableMoon: "Moon",
-      enableMercury: "Mercury",
-      enableVenus: "Venus",
-      enableMars: "Mars",
-      enableJupiter: "Jupiter",
-      enableSaturn: "Saturn",
-      enableUranus: "Uranus",
-      enableNeptune: "Neptune",
-      enablePluto: "Pluto"
-    };
-    const mapAspect = {
-      enableConjunction: "Conjunction",
-      enableOpposition: "Opposition",
-      enableTrine: "Trine",
-      enableSquare: "Square",
-      enableSextile: "Sextile",
-      enableQuincunx: "Quincunx",
-      enableSemiSextile: "Semi-sextile",
-      enableSemiSquare: "Semi-square",
-      enableSesquiquadrate: "Sesquiquadrate",
-      enableQuintile: "Quintile"
-    };
-    for (const k of Object.keys(mapPlanet)) {
-      if (typeof raw[k] === "boolean")
-        out.planets[mapPlanet[k]] = raw[k];
-    }
-    for (const k of Object.keys(mapAspect)) {
-      if (typeof raw[k] === "boolean")
-        out.aspects[mapAspect[k]] = raw[k];
-    }
-    return out;
+    this.settings = migrateSettings(await this.loadData());
   }
   async saveSettings() {
     await this.saveData(this.settings);
   }
-  /* ── HTTP: always use Obsidian's requestUrl (no CORS preflight from app:// origin) ── */
+  /* ── HTTP via requestUrl (no CORS preflight from app:// origin) ── */
   async req(path, opts) {
-    var _a, _b, _c;
-    const base = this.settings.serverUrl.replace(/\/+$/, "");
-    const url = `${base}${path.startsWith("/") ? path : "/" + path}`;
+    var _a, _b;
+    const url = joinUrl(this.settings.serverUrl, path);
     const res = await (0, import_obsidian.requestUrl)({
       url,
       method: (_a = opts == null ? void 0 : opts.method) != null ? _a : "GET",
@@ -320,59 +456,61 @@ var MoonPlugin = class extends import_obsidian.Plugin {
       throw: false
     });
     if (res.status < 200 || res.status >= 300) {
-      throw new Error(`HTTP ${res.status} from ${url}: ${(_c = (_b = res.text) == null ? void 0 : _b.slice(0, 200)) != null ? _c : ""}`);
+      throw new Error(`HTTP ${res.status} from ${url}: ${((_b = res.text) != null ? _b : "").slice(0, 200)}`);
     }
     return res.json;
   }
-  /* ── Data fetchers ── */
+  /* ── Data fetchers (real baratie endpoints) ── */
   async getMoonData() {
-    return this.req(`/moon-now?tz=${encodeURIComponent(this.settings.timezone)}`);
+    return this.req("/moon-now");
   }
   async getPlanetaryData() {
-    const data = await this.req(
-      `/planets-now?tz=${encodeURIComponent(this.settings.timezone)}`
-    );
+    const data = await this.req("/planets-now");
     return {
       ...data,
       planets: data.planets.filter((p) => this.settings.planets[p.name])
     };
   }
   async getAspectsData() {
-    if (this.settings.useNatalChart && this.hasBirthChart()) {
-      return this.getTransitsToNatal();
-    }
-    const params = this.buildAspectQuery();
-    const data = await this.req(`/aspects-now?${params}`);
-    return data;
+    const data = await this.req("/aspects-now");
+    return { ...data, aspects: filterSkyAspects(data.aspects, this.settings) };
   }
-  async getTransitsToNatal() {
-    if (!this.hasBirthChart()) {
-      throw new Error("Birth chart not configured \u2014 set it in Moon Phase settings.");
-    }
-    const body = {
-      tz: this.settings.timezone,
-      birth: this.settings.birth,
-      planets: this.enabledList(this.settings.planets),
-      aspects: this.enabledAspectsWithOrbs()
-    };
-    return this.req("/transits-to-natal", { method: "POST", body });
+  async getNatalTransits(chartName) {
+    const name = (chartName != null ? chartName : this.settings.selectedChart).trim();
+    if (!name)
+      throw new Error("No saved chart selected \u2014 pick one in Moon Phase settings.");
+    const qs = natalTransitQuery(this.settings);
+    return this.req(`/transits/${encodeURIComponent(name)}/now${qs}`);
   }
-  async getNatalChart() {
-    if (!this.hasBirthChart()) {
-      throw new Error("Birth chart not configured \u2014 set it in Moon Phase settings.");
+  async getNatalChart(chartName) {
+    const name = (chartName != null ? chartName : this.settings.selectedChart).trim();
+    if (!name)
+      throw new Error("No saved chart selected.");
+    return this.req(`/chart/${encodeURIComponent(name)}`);
+  }
+  async listSavedCharts() {
+    const data = await this.req("/charts");
+    return Array.isArray(data == null ? void 0 : data.charts) ? data.charts : [];
+  }
+  async generateChart(body) {
+    return this.req("/generate-chart", { method: "POST", body });
+  }
+  /* Routes through whichever mode is active. */
+  async getEffectiveAspects() {
+    if (this.settings.useNatalChart && this.settings.selectedChart) {
+      const data = await this.getNatalTransits();
+      return filterNatalTransits(data.transits, this.settings);
     }
-    return this.req("/natal-chart", {
-      method: "POST",
-      body: { birth: this.settings.birth }
-    });
+    return (await this.getAspectsData()).aspects;
   }
   async getWeeklyMajorPhase() {
+    var _a, _b;
     try {
       const data = await this.req(
-        `/weekly-major-phase?tz=${encodeURIComponent(this.settings.timezone)}`
+        "/weekly-major-phase"
       );
-      if (data.moonPhase) {
-        return { date: data.date, moonPhase: data.moonPhase, moonSign: data.moonSign };
+      if (data == null ? void 0 : data.moonPhase) {
+        return { date: (_a = data.date) != null ? _a : "", moonPhase: data.moonPhase, moonSign: (_b = data.moonSign) != null ? _b : "" };
       }
       return null;
     } catch (err) {
@@ -384,7 +522,7 @@ var MoonPlugin = class extends import_obsidian.Plugin {
   async getCurrentMoonPhase() {
     try {
       const m = await this.getMoonData();
-      return `${this.getMoonPhaseEmoji(m.moonPhase)} ${m.moonSign}`;
+      return `${moonPhaseEmoji(m.moonPhase)} ${m.moonSign}`;
     } catch (e) {
       return "Error fetching moon data";
     }
@@ -392,7 +530,7 @@ var MoonPlugin = class extends import_obsidian.Plugin {
   async getCurrentMoonDegree() {
     try {
       const m = await this.getMoonData();
-      return `${this.getMoonPhaseEmoji(m.moonPhase)} ${m.moonSign} ${m.degreeInSign}\u02DA`;
+      return `${moonPhaseEmoji(m.moonPhase)} ${m.moonSign} ${m.degreeInSign}\u02DA`;
     } catch (e) {
       return "Error fetching moon data";
     }
@@ -401,101 +539,11 @@ var MoonPlugin = class extends import_obsidian.Plugin {
     const phase = await this.getWeeklyMajorPhase();
     if (!phase)
       return "No major moon phase this week.";
-    return `${this.getMoonPhaseEmoji(phase.moonPhase)} ${phase.moonSign}`;
-  }
-  /* ── Helpers ── */
-  hasBirthChart() {
-    const b = this.settings.birth;
-    return !!(b.date && b.time && b.timezone && Number.isFinite(b.latitude) && Number.isFinite(b.longitude));
-  }
-  enabledList(map) {
-    return Object.keys(map).filter((k) => map[k]);
-  }
-  enabledAspectsWithOrbs() {
-    return ASPECTS.filter((a) => this.settings.aspects[a]).map((a) => {
-      var _a;
-      return { name: a, orb: (_a = this.settings.orbs[a]) != null ? _a : DEFAULT_ORBS[a] };
-    });
-  }
-  buildAspectQuery() {
-    const params = new URLSearchParams();
-    params.set("tz", this.settings.timezone);
-    for (const p of this.enabledList(this.settings.planets))
-      params.append("planets", p);
-    for (const { name, orb } of this.enabledAspectsWithOrbs()) {
-      params.append("aspects", name);
-      params.append(`orb_${name}`, String(orb));
-    }
-    return params.toString();
-  }
-  formatPlanetLine(p) {
-    const glyph = this.getPlanetGlyph(p.name);
-    const retro = p.isRetrograde ? " \u211E" : "";
-    return `${glyph} ${p.sign} ${p.degreeInSign}\u02DA${retro}`;
-  }
-  formatAspectLine(a) {
-    const g1 = this.getPlanetGlyph(a.planet1);
-    const g2 = this.getPlanetGlyph(a.planet2);
-    const r1 = a.planet1Retrograde ? " \u211E" : "";
-    const r2 = a.planet2Retrograde ? " \u211E" : "";
-    const natalTag = a.natal ? " (natal)" : "";
-    return `${g1}${r1} ${a.aspectSymbol} ${g2}${r2}${natalTag}`;
+    return `${moonPhaseEmoji(phase.moonPhase)} ${phase.moonSign}`;
   }
   handleError(editor, what, err) {
     console.error(`Error fetching ${what}:`, err);
     editor.replaceSelection(`Error fetching ${what}. Check console for details.`);
-  }
-  getMoonPhaseEmoji(phase) {
-    switch (phase) {
-      case "New Moon":
-        return "\u{1F311}";
-      case "Waxing Crescent":
-        return "\u{1F312}";
-      case "First Quarter":
-        return "\u{1F313}";
-      case "Waxing Gibbous":
-        return "\u{1F314}";
-      case "Full Moon":
-        return "\u{1F315}";
-      case "Waning Gibbous":
-        return "\u{1F316}";
-      case "Last Quarter":
-        return "\u{1F317}";
-      case "Waning Crescent":
-        return "\u{1F318}";
-      default:
-        return "\u{1F319}";
-    }
-  }
-  getPlanetGlyph(planetName) {
-    switch (planetName) {
-      case "Sun":
-        return "\u2609";
-      case "Moon":
-        return "\u263D";
-      case "Mercury":
-        return "\u263F";
-      case "Venus":
-        return "\u2640";
-      case "Mars":
-        return "\u2642";
-      case "Jupiter":
-        return "\u2643";
-      case "Saturn":
-        return "\u2644";
-      case "Uranus":
-        return "\u2645";
-      case "Neptune":
-        return "\u2646";
-      case "Pluto":
-        return "\u2647";
-      case "Ascendant":
-        return "ASC";
-      case "Midheaven":
-        return "MC";
-      default:
-        return "\u2605";
-    }
   }
 };
 var MoonSettingTab = class extends import_obsidian.PluginSettingTab {
@@ -503,6 +551,16 @@ var MoonSettingTab = class extends import_obsidian.PluginSettingTab {
     super(app, plugin);
     this.activeTab = "general";
     this.locationSearchTimer = null;
+    this.cachedCharts = null;
+    this.chartDraft = {
+      name: "",
+      date: "",
+      time: "12:00",
+      locationName: "",
+      latitude: NaN,
+      longitude: NaN,
+      timezone: typeof Intl !== "undefined" ? Intl.DateTimeFormat().resolvedOptions().timeZone : "UTC"
+    };
     this.plugin = plugin;
   }
   display() {
@@ -511,7 +569,7 @@ var MoonSettingTab = class extends import_obsidian.PluginSettingTab {
     containerEl.createEl("h2", { text: "Moon Phase Settings" });
     const tabs = [
       { id: "general", label: "General" },
-      { id: "birth", label: "Birth Chart" },
+      { id: "chart", label: "Natal Chart" },
       { id: "planets", label: "Planets" },
       { id: "aspects", label: "Aspects" }
     ];
@@ -531,8 +589,8 @@ var MoonSettingTab = class extends import_obsidian.PluginSettingTab {
       case "general":
         this.renderGeneral(body);
         break;
-      case "birth":
-        this.renderBirth(body);
+      case "chart":
+        this.renderChart(body);
         break;
       case "planets":
         this.renderPlanets(body);
@@ -544,20 +602,8 @@ var MoonSettingTab = class extends import_obsidian.PluginSettingTab {
   }
   /* ── General ── */
   renderGeneral(c) {
-    new import_obsidian.Setting(c).setName("Server URL").setDesc("URL to the Swiss Ephemeris server (no trailing slash).").addText((text) => text.setPlaceholder("http://localhost:3000").setValue(this.plugin.settings.serverUrl).onChange(async (value) => {
-      this.plugin.settings.serverUrl = value.trim();
-      await this.plugin.saveSettings();
-    }));
-    new import_obsidian.Setting(c).setName("Timezone").setDesc('IANA timezone used to interpret "now" for sky calculations. Defaults to your system timezone.').addText((text) => text.setPlaceholder("America/New_York").setValue(this.plugin.settings.timezone).onChange(async (value) => {
-      this.plugin.settings.timezone = value.trim() || DEFAULT_SETTINGS.timezone;
-      await this.plugin.saveSettings();
-    })).addExtraButton((btn) => btn.setIcon("reset").setTooltip("Detect from system").onClick(async () => {
-      this.plugin.settings.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-      await this.plugin.saveSettings();
-      this.display();
-    }));
-    new import_obsidian.Setting(c).setName("Use natal chart for transits").setDesc("When on, aspect commands return transits to your natal chart (planets in the sky now \u2192 your birth planets) instead of sky-to-sky aspects. Requires a configured birth chart.").addToggle((t) => t.setValue(this.plugin.settings.useNatalChart).onChange(async (v) => {
-      this.plugin.settings.useNatalChart = v;
+    new import_obsidian.Setting(c).setName("Server URL").setDesc("URL to your Sweph Astrological API server (e.g. http://baratie:3000).").addText((text) => text.setPlaceholder("http://localhost:3000").setValue(this.plugin.settings.serverUrl).onChange(async (value) => {
+      this.plugin.settings.serverUrl = normalizeBaseUrl(value);
       await this.plugin.saveSettings();
     }));
     const testWrap = c.createDiv({ cls: "moon-test-wrap" });
@@ -565,8 +611,10 @@ var MoonSettingTab = class extends import_obsidian.PluginSettingTab {
       var _a, _b, _c;
       btn.setDisabled(true).setButtonText("Testing\u2026");
       try {
-        const base = this.plugin.settings.serverUrl.replace(/\/+$/, "");
-        const res = await (0, import_obsidian.requestUrl)({ url: `${base}/test`, throw: false });
+        const res = await (0, import_obsidian.requestUrl)({
+          url: joinUrl(this.plugin.settings.serverUrl, "/test"),
+          throw: false
+        });
         if (res.status >= 200 && res.status < 300) {
           new import_obsidian.Notice(`Server OK: ${(_b = (_a = res.json) == null ? void 0 : _a.status) != null ? _b : "reachable"}`);
         } else {
@@ -579,29 +627,78 @@ var MoonSettingTab = class extends import_obsidian.PluginSettingTab {
       }
     }));
   }
-  /* ── Birth Chart ── */
-  renderBirth(c) {
-    const intro = c.createEl("p", { cls: "moon-tab-intro" });
-    intro.setText("Your birth data is sent to your local Swiss Ephemeris server when computing natal charts and transits-to-natal. It never leaves your machine.");
-    const b = this.plugin.settings.birth;
-    const dateSetting = new import_obsidian.Setting(c).setName("Birth date").setDesc("Used for the natal chart.");
-    const dateInput = dateSetting.controlEl.createEl("input", { type: "date" });
-    dateInput.value = b.date || "";
-    dateInput.addEventListener("change", async () => {
-      this.plugin.settings.birth.date = dateInput.value;
+  /* ── Natal Chart ── */
+  renderChart(c) {
+    c.createEl("p", {
+      cls: "moon-tab-intro",
+      text: 'Pick one of the natal charts saved on your Sweph server. When "Use natal chart for transits" is on, the aspect commands return transits to that chart instead of plain sky-to-sky aspects.'
+    });
+    const pickerSetting = new import_obsidian.Setting(c).setName("Saved chart").setDesc("Charts saved on the server via /generate-chart.");
+    const dropdown = pickerSetting.controlEl.createEl("select", { cls: "dropdown" });
+    const refreshBtn = pickerSetting.controlEl.createEl("button", { text: "Refresh" });
+    refreshBtn.addEventListener("click", async () => {
+      this.cachedCharts = null;
+      await this.populateChartDropdown(dropdown);
+    });
+    this.populateChartDropdown(dropdown);
+    dropdown.addEventListener("change", async () => {
+      this.plugin.settings.selectedChart = dropdown.value;
       await this.plugin.saveSettings();
     });
-    const timeSetting = new import_obsidian.Setting(c).setName("Birth time").setDesc("Local time at the place of birth (24-hour, HH:mm). Accuracy matters most for the Ascendant / houses.");
-    const timeInput = timeSetting.controlEl.createEl("input", { type: "time" });
-    timeInput.value = b.time || "12:00";
-    timeInput.step = "60";
-    timeInput.addEventListener("change", async () => {
-      this.plugin.settings.birth.time = timeInput.value;
+    new import_obsidian.Setting(c).setName("Use natal chart for transits").setDesc("When on, the aspect commands return transits aspecting the saved chart's planets (via /transits/:name/now).").addToggle((t) => t.setValue(this.plugin.settings.useNatalChart).onChange(async (v) => {
+      this.plugin.settings.useNatalChart = v;
       await this.plugin.saveSettings();
+    }));
+    new import_obsidian.Setting(c).setName("Major aspects only").setDesc("Sends ?major=true to /transits/:name/now. Conjunction / Opposition / Trine / Square / Sextile only.").addToggle((t) => t.setValue(this.plugin.settings.majorOnly).onChange(async (v) => {
+      this.plugin.settings.majorOnly = v;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian.Setting(c).setName("Natal orb (degrees)").setDesc("Tightness of natal transit aspects. The server applies this to /transits/:name/now.").addSlider((s) => s.setLimits(1, 12, 0.5).setValue(this.plugin.settings.natalOrb).setDynamicTooltip().onChange(async (v) => {
+      this.plugin.settings.natalOrb = v;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian.Setting(c).addButton((btn) => btn.setButtonText("Preview transits").setCta().onClick(async () => {
+      var _a;
+      if (!this.plugin.settings.selectedChart) {
+        new import_obsidian.Notice("Pick a saved chart first.");
+        return;
+      }
+      btn.setDisabled(true).setButtonText("Loading\u2026");
+      try {
+        const data = await this.plugin.getNatalTransits();
+        const lines = filterNatalTransits(data.transits, this.plugin.settings).slice(0, 10).map(formatSkyAspectLine);
+        new import_obsidian.Notice(`Top transits for ${data.name}:
+${lines.join("\n")}`, 12e3);
+      } catch (err) {
+        new import_obsidian.Notice(`Preview failed: ${(_a = err == null ? void 0 : err.message) != null ? _a : err}`, 8e3);
+      } finally {
+        btn.setDisabled(false).setButtonText("Preview transits");
+      }
+    }));
+    c.createEl("h3", { text: "Create a new chart" });
+    c.createEl("p", {
+      cls: "moon-tab-intro",
+      text: "Fill in birth details and save the chart to your Sweph server. Once saved, it appears in the dropdown above."
+    });
+    new import_obsidian.Setting(c).setName("Chart name").setDesc("A short identifier, e.g. your first name. Used as the URL slug.").addText((t) => t.setPlaceholder("chris").setValue(this.chartDraft.name).onChange((v) => {
+      this.chartDraft.name = v.trim();
+    }));
+    const dateSetting = new import_obsidian.Setting(c).setName("Birth date");
+    const dateInput = dateSetting.controlEl.createEl("input", { type: "date" });
+    dateInput.value = this.chartDraft.date;
+    dateInput.addEventListener("change", () => {
+      this.chartDraft.date = dateInput.value;
+    });
+    const timeSetting = new import_obsidian.Setting(c).setName("Birth time").setDesc("Local time at the birth location (24h). Accuracy matters most for the Ascendant / houses.");
+    const timeInput = timeSetting.controlEl.createEl("input", { type: "time" });
+    timeInput.value = this.chartDraft.time;
+    timeInput.step = "60";
+    timeInput.addEventListener("change", () => {
+      this.chartDraft.time = timeInput.value;
     });
     const locWrap = c.createDiv({ cls: "moon-loc-wrap" });
-    new import_obsidian.Setting(locWrap).setName("Location").setDesc("Type a city or address, then pick a result. Latitude, longitude, and timezone are filled automatically.").addText((text) => {
-      text.setPlaceholder("e.g. Asheville, NC").setValue(b.locationName).onChange((value) => {
+    new import_obsidian.Setting(locWrap).setName("Location").setDesc("Type a city, then pick a result to auto-fill latitude / longitude.").addText((text) => {
+      text.setPlaceholder("e.g. Orlando, FL").setValue(this.chartDraft.locationName).onChange((value) => {
         if (this.locationSearchTimer)
           window.clearTimeout(this.locationSearchTimer);
         const query = value.trim();
@@ -609,53 +706,68 @@ var MoonSettingTab = class extends import_obsidian.PluginSettingTab {
           results.empty();
           return;
         }
-        this.locationSearchTimer = window.setTimeout(() => this.searchLocations(query, results), 400);
+        this.locationSearchTimer = window.setTimeout(
+          () => this.searchLocations(query, results),
+          400
+        );
       });
       return text;
     });
     const results = locWrap.createDiv({ cls: "moon-loc-results" });
-    new import_obsidian.Setting(c).setName("Latitude").setDesc("Decimal degrees, north positive.").addText((text) => text.setPlaceholder("35.5951").setValue(Number.isFinite(b.latitude) ? String(b.latitude) : "").onChange(async (value) => {
-      const n = parseFloat(value);
-      if (Number.isFinite(n)) {
-        this.plugin.settings.birth.latitude = n;
-        await this.plugin.saveSettings();
-      }
+    new import_obsidian.Setting(c).setName("Latitude").setDesc("Decimal degrees, north positive.").addText((t) => t.setPlaceholder("28.5383").setValue(Number.isFinite(this.chartDraft.latitude) ? String(this.chartDraft.latitude) : "").onChange((v) => {
+      this.chartDraft.latitude = parseFloat(v);
     }));
-    new import_obsidian.Setting(c).setName("Longitude").setDesc("Decimal degrees, east positive.").addText((text) => text.setPlaceholder("-82.5515").setValue(Number.isFinite(b.longitude) ? String(b.longitude) : "").onChange(async (value) => {
-      const n = parseFloat(value);
-      if (Number.isFinite(n)) {
-        this.plugin.settings.birth.longitude = n;
-        await this.plugin.saveSettings();
-      }
+    new import_obsidian.Setting(c).setName("Longitude").setDesc("Decimal degrees, east positive.").addText((t) => t.setPlaceholder("-81.3792").setValue(Number.isFinite(this.chartDraft.longitude) ? String(this.chartDraft.longitude) : "").onChange((v) => {
+      this.chartDraft.longitude = parseFloat(v);
     }));
-    new import_obsidian.Setting(c).setName("Birth timezone").setDesc("IANA timezone of the birth location (e.g. America/New_York). Auto-filled by location search.").addText((text) => text.setPlaceholder("America/New_York").setValue(b.timezone).onChange(async (value) => {
-      this.plugin.settings.birth.timezone = value.trim();
-      await this.plugin.saveSettings();
+    new import_obsidian.Setting(c).setName("Birth timezone").setDesc("IANA timezone of the birth location (e.g. America/New_York).").addText((t) => t.setPlaceholder("America/New_York").setValue(this.chartDraft.timezone).onChange((v) => {
+      this.chartDraft.timezone = v.trim();
     }));
-    const actions = c.createDiv({ cls: "moon-birth-actions" });
-    new import_obsidian.Setting(actions).addButton((btn) => btn.setButtonText("Preview natal chart").setCta().onClick(async () => {
+    new import_obsidian.Setting(c).addButton((btn) => btn.setButtonText("Save chart").setCta().onClick(async () => {
       var _a;
-      btn.setDisabled(true).setButtonText("Computing\u2026");
+      btn.setDisabled(true).setButtonText("Saving\u2026");
       try {
-        const chart = await this.plugin.getNatalChart();
-        const lines = chart.planets.map((p) => `${this.plugin.getPlanetGlyph(p.name)} ${p.name}: ${p.sign} ${p.degreeInSign}\u02DA${p.isRetrograde ? " \u211E" : ""}`);
-        if (chart.ascendant) {
-          lines.unshift(`ASC: ${chart.ascendant.sign} ${chart.ascendant.degreeInSign}\u02DA`);
-        }
-        if (chart.midheaven) {
-          lines.push(`MC: ${chart.midheaven.sign} ${chart.midheaven.degreeInSign}\u02DA`);
-        }
-        new import_obsidian.Notice(lines.join("\n"), 12e3);
+        const body = buildGenerateChartBody({
+          name: this.chartDraft.name,
+          date: this.chartDraft.date,
+          time: this.chartDraft.time,
+          latitude: this.chartDraft.latitude,
+          longitude: this.chartDraft.longitude,
+          timezone: this.chartDraft.timezone,
+          save: true
+        });
+        await this.plugin.generateChart(body);
+        new import_obsidian.Notice(`Saved chart "${body.name}"`);
+        this.plugin.settings.selectedChart = body.name;
+        await this.plugin.saveSettings();
+        this.cachedCharts = null;
+        this.display();
       } catch (err) {
-        new import_obsidian.Notice(`Preview failed: ${(_a = err == null ? void 0 : err.message) != null ? _a : err}`, 8e3);
+        new import_obsidian.Notice(`Save failed: ${(_a = err == null ? void 0 : err.message) != null ? _a : err}`, 8e3);
       } finally {
-        btn.setDisabled(false).setButtonText("Preview natal chart");
+        btn.setDisabled(false).setButtonText("Save chart");
       }
-    })).addButton((btn) => btn.setButtonText("Clear birth chart").setWarning().onClick(async () => {
-      this.plugin.settings.birth = { ...DEFAULT_SETTINGS.birth };
-      await this.plugin.saveSettings();
-      this.display();
     }));
+  }
+  async populateChartDropdown(dropdown) {
+    var _a;
+    const current = this.plugin.settings.selectedChart;
+    dropdown.empty();
+    dropdown.createEl("option", { text: "\u2014 None (sky-to-sky aspects) \u2014", value: "" });
+    try {
+      if (!this.cachedCharts)
+        this.cachedCharts = await this.plugin.listSavedCharts();
+      for (const name of this.cachedCharts) {
+        dropdown.createEl("option", { text: name, value: name });
+      }
+      dropdown.value = current && this.cachedCharts.includes(current) ? current : "";
+    } catch (err) {
+      const opt = dropdown.createEl("option", {
+        text: `(couldn't load charts: ${(_a = err == null ? void 0 : err.message) != null ? _a : err})`,
+        value: ""
+      });
+      opt.disabled = true;
+    }
   }
   async searchLocations(query, container) {
     var _a;
@@ -681,25 +793,10 @@ var MoonSettingTab = class extends import_obsidian.PluginSettingTab {
       for (const item of items) {
         const row = container.createDiv({ cls: "moon-loc-row" });
         row.createSpan({ text: item.display_name });
-        row.addEventListener("click", async () => {
-          var _a2;
-          const lat = parseFloat(item.lat);
-          const lon = parseFloat(item.lon);
-          this.plugin.settings.birth.locationName = item.display_name;
-          this.plugin.settings.birth.latitude = lat;
-          this.plugin.settings.birth.longitude = lon;
-          try {
-            const base = this.plugin.settings.serverUrl.replace(/\/+$/, "");
-            const tzRes = await (0, import_obsidian.requestUrl)({
-              url: `${base}/timezone-at?lat=${lat}&lon=${lon}`,
-              throw: false
-            });
-            if (tzRes.status >= 200 && tzRes.status < 300 && ((_a2 = tzRes.json) == null ? void 0 : _a2.timezone)) {
-              this.plugin.settings.birth.timezone = tzRes.json.timezone;
-            }
-          } catch (e) {
-          }
-          await this.plugin.saveSettings();
+        row.addEventListener("click", () => {
+          this.chartDraft.locationName = item.display_name;
+          this.chartDraft.latitude = parseFloat(item.lat);
+          this.chartDraft.longitude = parseFloat(item.lon);
           this.display();
         });
       }
@@ -712,10 +809,10 @@ var MoonSettingTab = class extends import_obsidian.PluginSettingTab {
   renderPlanets(c) {
     c.createEl("p", {
       cls: "moon-tab-intro",
-      text: "Toggle which planets are included in position lists and aspect calculations."
+      text: "Toggle which planets appear in position lists and aspect calculations."
     });
     for (const planet of PLANETS) {
-      new import_obsidian.Setting(c).setName(`${this.plugin.getPlanetGlyph(planet)} ${planet}`).addToggle((t) => t.setValue(this.plugin.settings.planets[planet]).onChange(async (v) => {
+      new import_obsidian.Setting(c).setName(`${planetGlyph(planet)} ${planet}`).addToggle((t) => t.setValue(this.plugin.settings.planets[planet]).onChange(async (v) => {
         this.plugin.settings.planets[planet] = v;
         await this.plugin.saveSettings();
       }));
@@ -725,23 +822,12 @@ var MoonSettingTab = class extends import_obsidian.PluginSettingTab {
   renderAspects(c) {
     c.createEl("p", {
       cls: "moon-tab-intro",
-      text: "Toggle aspect visibility, and adjust the orb of influence (in degrees). Bigger orb = more aspects reported, looser fit."
+      text: "Toggle which aspect types appear in aspect commands. (Orb for sky-to-sky aspects comes from the server; orb for natal transits is set on the Natal Chart tab.)"
     });
     for (const aspect of ASPECTS) {
-      const wrap = c.createDiv({ cls: "moon-aspect-row" });
-      new import_obsidian.Setting(wrap).setName(`${ASPECT_SYMBOLS[aspect]} ${aspect}`).addToggle((t) => t.setValue(this.plugin.settings.aspects[aspect]).onChange(async (v) => {
+      new import_obsidian.Setting(c).setName(`${ASPECT_SYMBOLS[aspect]} ${aspect}`).addToggle((t) => t.setValue(this.plugin.settings.aspects[aspect]).onChange(async (v) => {
         this.plugin.settings.aspects[aspect] = v;
         await this.plugin.saveSettings();
-      })).addSlider((slider) => {
-        var _a;
-        return slider.setLimits(0.5, 12, 0.5).setValue((_a = this.plugin.settings.orbs[aspect]) != null ? _a : DEFAULT_ORBS[aspect]).setDynamicTooltip().onChange(async (v) => {
-          this.plugin.settings.orbs[aspect] = v;
-          await this.plugin.saveSettings();
-        });
-      }).addExtraButton((btn) => btn.setIcon("reset").setTooltip("Reset orb to default").onClick(async () => {
-        this.plugin.settings.orbs[aspect] = DEFAULT_ORBS[aspect];
-        await this.plugin.saveSettings();
-        this.display();
       }));
     }
   }

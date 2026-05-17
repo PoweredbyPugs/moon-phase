@@ -1,40 +1,32 @@
 # Obsidian Moon Plugin
 
-Pulls real astrological data — moon phase, sign, planetary positions, aspects, and **transits to your natal chart** — from a local Swiss Ephemeris server and drops it into your notes.
+A thin Obsidian client for the [Sweph Astrological API](https://github.com/PoweredbyPugs/Sweph-server) — pulls live moon-phase, planetary-position, aspect, and **transit-to-natal-chart** data from your local Swiss Ephemeris server and drops it into your notes.
 
 ## Features
 
 - Current moon phase + sign + exact degree
-- Next major moon phase in the current week (exact timestamp, not a rough estimate)
-- All planetary positions or a single planet
+- Next major moon phase in the current week
+- All planetary positions or a single planet, with retrograde marks
 - All current aspects, filtered by planet or aspect type
-- **Birth chart support** — enter your birth data in settings (date / time / location lookup), then aspect commands compute **transits to your natal planets** instead of plain sky-to-sky aspects
-- Templater-friendly: every data getter is exposed on `window.MoonPhasePlugin`
-- Tabbed settings UI: General · Birth Chart · Planets · Aspects (with per-aspect orb sliders)
+- **Natal-chart mode** — pick a chart you've saved on the server and aspect commands return transits to *your* planets via `/transits/:name/now`
+- **Create new charts from settings** — date / time / location-search form posts to `/generate-chart`
+- Templater-friendly: every getter is exposed on `window.MoonPhasePlugin`
+- Tabbed settings UI: General · Natal Chart · Planets · Aspects
 
 ## Setup
 
-### 1. Run the Swiss Ephemeris server
+### 1. Run the Sweph Astrological API server
 
-The plugin is a thin client — calculations happen in a separate Node/Express server that you run locally (or on your homelab). See `sweph-server-setup.md` for the Docker walkthrough.
-
-Quick path:
-
-```bash
-cd path/to/this/plugin
-docker compose up -d --build
-```
-
-The server listens on port 3000. Point the plugin's **Settings → General → Server URL** at it.
+The plugin is a thin client — all calculations happen in a separate Node/Express server. Source lives at **`PoweredbyPugs/Sweph-server`**. See that repo's README for Docker deployment.
 
 ### 2. Configure the plugin
 
 Open **Settings → Community plugins → Moon Phase**.
 
-- **General** — server URL, your timezone (auto-detected), and a "use natal chart for transits" master toggle.
-- **Birth Chart** — date, time, location (with an OpenStreetMap-backed search box that auto-fills latitude / longitude / timezone), and a "Preview natal chart" button.
-- **Planets** — toggle which planets appear in lists and aspect calculations.
-- **Aspects** — toggle each aspect type and adjust its orb of influence (in degrees) with a slider.
+- **General** — point the server URL at your Sweph instance (e.g. `http://baratie:3000`). Click **Test** to confirm reachability.
+- **Natal Chart** — pick a saved chart from the dropdown (loaded live via `GET /charts`), or fill in the **Create a new chart** form to add one.
+- **Planets** — toggle which planets appear in position lists and aspect calculations.
+- **Aspects** — toggle which aspect types are shown.
 
 ## Commands
 
@@ -45,25 +37,26 @@ Open **Settings → Community plugins → Moon Phase**.
 | Weekly Phase | Next major phase this week with its sign |
 | All Planetary Positions | One line per visible planet |
 | `<Planet>` Position | A single planet's sign + degree |
-| All Current Aspects | All visible aspects (sky-to-sky, or transit-to-natal if enabled) |
+| All Current Aspects | All visible aspects (sky-to-sky, **or** transit-to-natal when natal mode is on) |
 | `<Planet>` Aspects | Aspects involving that planet |
-| `<Aspect>` Aspects | Aspects of a given type (Conjunction / Square / etc.) |
+| `<Aspect>` Aspects | Aspects of one type (Conjunction / Square / etc.) |
 
-When **Use natal chart for transits** is on and birth data is filled in, aspect commands compare today's sky against your natal chart and tag each line `(natal)`.
+When **Use natal chart for transits** is on and a chart is selected, aspect commands hit `GET /transits/:name/now?major=…&orb=…` and return transits between the current sky and your saved natal chart.
 
 ## Templater integration
 
-The plugin exposes its API on `window.MoonPhasePlugin`. Common helpers:
+The plugin exposes its API on `window.MoonPhasePlugin`:
 
 | Function | Returns |
 |---|---|
 | `getCurrentMoonPhase()` | `"🌕 Libra"` |
 | `getCurrentMoonDegree()` | `"🌕 Libra 15.2˚"` |
-| `getWeeklyPhase()` | `"🌓 Capricorn"` (or a not-this-week message) |
-| `getPlanetaryData()` | `{localTime, planets: [...]}` |
-| `getAspectsData()` | `{localTime, aspects: [...]}` — automatically uses natal mode if enabled |
-| `getTransitsToNatal()` | Same shape as above but always computes transits to natal |
-| `getNatalChart()` | `{planets, houses, ascendant, midheaven}` |
+| `getWeeklyPhase()` | `"🌓 Capricorn"` |
+| `getPlanetaryData()` | `{localEasternTime, planets: [...]}` |
+| `getAspectsData()` | `{localEasternTime, aspects: [...]}` — always sky-to-sky |
+| `getNatalTransits(chartName?)` | Full natal-transit response (with phase, isExact, isTight, etc.) |
+| `getNatalChart(chartName?)` | The full stored natal chart record |
+| `listSavedCharts()` | Array of saved-chart names |
 
 ### Example daily note template
 
@@ -79,22 +72,29 @@ Today's moon is <% await window.MoonPhasePlugin.getCurrentMoonDegree() %>
 Major phase this week: <% await window.MoonPhasePlugin.getWeeklyPhase() %>
 ```
 
-## Troubleshooting
+## Development
 
-- **`Error fetching ...`** — usually means the plugin can't reach the server. Verify the URL in settings and try the **Test** button on the General tab.
-- **Wrong sign or degree** — confirm your timezone in settings. The server now respects whatever timezone you pass; older versions hard-coded `America/New_York`.
-- **Natal transits don't work** — make sure birth date / time / latitude / longitude / timezone are all filled. The location-search box fills these for you.
+```bash
+npm install
+npm run dev      # watch-mode build
+npm run build    # production build
+npm test         # vitest run
+```
 
-## Endpoints (for reference)
+Pure logic (settings migration, URL building, response normalization) lives in `src/pure.ts` and is exercised by `src/__tests__/pure.test.ts`. Obsidian-coupled code lives in `main.ts`.
+
+## Endpoints used (for reference)
+
+All paths are documented live at `GET /api-info` on the server.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/moon-now?tz=X` | Current moon phase / sign / degree |
-| GET | `/planets-now?tz=X&planets=Sun…` | Planetary positions |
-| GET | `/aspects-now?tz=X&planets=…&aspects=…&orb_<Aspect>=N` | Sky-to-sky aspects with custom orbs |
-| POST | `/natal-chart` | Body `{birth}` — natal positions + houses |
-| POST | `/transits-to-natal` | Body `{tz, birth, planets, aspects}` — transits aspecting natal |
-| GET | `/weekly-major-phase?tz=X` | Exact next major moon phase |
-| GET | `/moon-phases?start=YYYY-MM-DD&end=YYYY-MM-DD&tz=X` | All major phases in range |
-| GET | `/timezone-at?lat=…&lon=…` | IANA timezone for coordinates (needs `geo-tz`) |
+| GET | `/moon-now` | Current moon phase / sign / degree |
+| GET | `/planets-now` | All planetary positions |
+| GET | `/aspects-now` | Sky-to-sky aspects |
+| GET | `/weekly-major-phase` | Major moon phase this week |
+| GET | `/charts` | List saved chart names |
+| GET | `/chart/:name` | Full natal chart record |
+| POST | `/generate-chart` | Create + optionally save a chart |
+| GET | `/transits/:name/now?major=true&orb=N` | Transits to a saved natal chart |
 | GET | `/test` | Health check |
