@@ -47,7 +47,8 @@ Once it's running, point **Settings → Obsidian Moon → General → Server URL
 
 | Command | Output |
 |---|---|
-| Cast Hexagram | I Ching cast with primary + relating hexagram |
+| Cast Hexagram (insert at cursor) | I Ching cast with primary + relating hexagram |
+| Hexagram Oracle (modal — cast / manual / day) | Full interactive reading: question field, line-by-line DeKorne text, recast, Insert ▾, save to journal |
 | Today's 9 Star Ki | Year / Month / Third Ki for today |
 | Natal 9 Star Ki | Birth Ki + today's personal cycle |
 | Midpoint Transits | Current transits aspecting natal midpoints |
@@ -149,14 +150,25 @@ src/__tests__/                # vitest suite (Ki canonical fixture, hexagram int
 - Prompt templates inspired by Stella
 - Memory loop: every reading saved as a markdown note in a vault folder, with frontmatter for Dataview
 
+**Phase 3.5 — Oracle ✅**
+
+- Dedicated **Oracle** settings tab (I Ching today; Tarot to land here later)
+- **Hexagram Oracle modal** with three modes: Cast / Manual / From the day
+- Visual hexagram render (HTML, not ASCII)
+- **Per-line drill-down** sourced from the **Gnostic Book of Changes** (DeKorne / Michael Servetus, public-domain at jamesdekorne.com) via knowledge-graph fulltext queries
+- Question field threaded into LLM-synthesis path so readings can answer specific asks
+- Recast / Insert ▾ (Compact / Full / LLM-synthesized) / Save to journal
+- Plum Blossom day-method (year+month+day for trigrams, hour for changing line) and a stable YMD-hash alternative
+- Templater hooks: `getDayHexagram()`, `lookupHexagram(number, line?)`
+
 **Phase 4 — One-command Sweph-server setup**
 
 - Settings button: "Install Sweph-server here" — provisions Docker locally, downloads ephemeris files, writes URL into settings
 
-**Phase 5 — Ergonomics + ecosystem**
+**Phase 5 — Tarot + ecosystem**
 
+- **Tarot module** under the Oracle tab — deck data, spread templates, knowledge-graph hooks (Waite, Thoth, etc. already in the corpus)
 - Animated cycle view (using `/cycle/:planet` timeline data)
-- Hexagram modal with line-by-line interpretation
 - "Aspect right now" status bar item
 - Vault-native fallback for knowledge layer (BM25/TF-IDF over markdown)
 - Community-plugin store submission

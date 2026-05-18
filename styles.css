@@ -111,3 +111,181 @@
   padding-top: 8px;
   border-top: 1px solid var(--background-modifier-border);
 }
+
+/* ── Hexagram modal ── */
+.moon-hexagram-modal {
+  max-width: 720px;
+}
+
+.moon-hex-question {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 14px;
+}
+.moon-hex-question label {
+  font-weight: 500;
+  font-size: 0.85em;
+  color: var(--text-muted);
+}
+.moon-hex-question input {
+  width: 100%;
+  padding: 8px;
+}
+
+.moon-hex-mode-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  border-bottom: 2px solid var(--background-modifier-border);
+}
+.moon-hex-mode {
+  padding: 8px 16px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+.moon-hex-mode:hover { color: var(--text-normal); }
+.moon-hex-mode.moon-hex-mode-active {
+  color: var(--text-normal);
+  border-bottom-color: var(--interactive-accent);
+}
+
+.moon-hex-body { min-height: 200px; }
+
+.moon-hex-head {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 16px;
+  align-items: center;
+  padding: 12px 0 16px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.moon-hex-figure {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 100px;
+}
+.moon-hex-line {
+  height: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  position: relative;
+}
+.moon-hex-line-yang .moon-hex-solid {
+  width: 100%;
+  height: 8px;
+  background: var(--text-normal);
+  border-radius: 1px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.moon-hex-line-yin .moon-hex-half {
+  flex: 1;
+  height: 8px;
+  background: var(--text-normal);
+  border-radius: 1px;
+}
+.moon-hex-line-yin .moon-hex-gap {
+  width: 14px;
+  flex-shrink: 0;
+}
+.moon-hex-x, .moon-hex-o {
+  position: absolute;
+  font-size: 12px;
+  color: var(--text-accent);
+  font-weight: 700;
+}
+.moon-hex-x {
+  background: var(--background-primary);
+  padding: 0 3px;
+  line-height: 12px;
+}
+.moon-hex-o {
+  color: var(--background-primary);
+  background: var(--text-accent);
+  border-radius: 50%;
+  width: 10px;
+  height: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 10px;
+  font-size: 9px;
+}
+
+.moon-hex-name { margin: 0 0 4px; }
+.moon-hex-meta { margin: 0 0 6px; color: var(--text-muted); font-size: 0.9em; }
+.moon-hex-judgment { margin: 0 0 6px; font-style: italic; }
+.moon-hex-changing {
+  margin: 0;
+  color: var(--text-accent);
+  font-weight: 500;
+}
+
+.moon-hex-lines { margin: 16px 0; }
+.moon-hex-lines h4 { margin: 0 0 8px; font-size: 0.95em; }
+.moon-hex-line-row {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  margin-bottom: 4px;
+  padding: 4px 10px;
+}
+.moon-hex-line-row summary {
+  cursor: pointer;
+  padding: 4px 0;
+  font-weight: 500;
+}
+.moon-hex-line-row.moon-hex-line-changing {
+  border-left: 3px solid var(--interactive-accent);
+}
+.moon-hex-line-changing summary {
+  color: var(--text-accent);
+}
+.moon-hex-line-body pre {
+  white-space: pre-wrap;
+  font-size: 0.85em;
+  margin: 8px 0;
+}
+
+.moon-hex-full, .moon-hex-relating {
+  margin: 16px 0 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  padding: 8px 12px;
+}
+.moon-hex-full summary, .moon-hex-relating summary {
+  cursor: pointer;
+  font-weight: 500;
+}
+.moon-hex-full-body pre, .moon-hex-relating-body div pre {
+  white-space: pre-wrap;
+  font-size: 0.85em;
+}
+
+.moon-hex-footer {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 20px;
+  padding-top: 14px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+.moon-hex-btn {
+  padding: 6px 12px;
+}
+.moon-hex-insert-wrap {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  margin-left: auto;
+}

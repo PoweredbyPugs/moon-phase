@@ -183,6 +183,102 @@ export function renderHexagram(lines: HexagramLine[]): string {
     }).join('\n');
 }
 
+/* ── Day-hexagram derivation ──────────────────────────────────────────── *
+ * Plum Blossom (梅花易数) variant adapted for the Gregorian calendar.
+ *
+ *   Upper trigram = ((year + month + day) mod 8) + 1
+ *   Lower trigram = ((year + month + day + hour) mod 8) + 1
+ *   Changing line = ((year + month + day + hour) mod 6) + 1
+ *
+ * The +1 avoids zero (trigram numbering 1..8 = Heaven, Lake, Fire, Thunder,
+ * Wind, Water, Mountain, Earth — King Wen / Bagua order). One changing line
+ * is always implied by the time, which matches Plum Blossom's tradition that
+ * every reading has motion.
+ *
+ * `ymd-hash` is the same idea but without an hour input, using a deterministic
+ * mix of year/month/day for a "daily hexagram" that's stable across the day
+ * and changing-line free. */
+
+export type DayMethod = 'plum-blossom' | 'ymd-hash';
+
+/* Plum Blossom uses the bagua numbering 1..8 in this order: */
+const BAGUA_ORDER = ['Heaven', 'Lake', 'Fire', 'Thunder', 'Wind', 'Water', 'Mountain', 'Earth'] as const;
+
+function trigramByBagua(num: number): string {
+    return BAGUA_ORDER[((num - 1) % 8 + 8) % 8];
+}
+
+function castFromTrigrams(upper: string, lower: string, changingLines: number[]): HexagramCast {
+    // Build the 6-line array, bottom-up: lower trigram (lines 1-3) + upper (4-6)
+    const trigramBits: Record<string, string> = {
+        Heaven: '111', Lake: '110', Fire: '101', Thunder: '100',
+        Wind: '011', Water: '010', Mountain: '001', Earth: '000',
+    };
+    const lower3 = trigramBits[lower].split('');
+    const upper3 = trigramBits[upper].split('');
+    const allBits = [...lower3, ...upper3];   // bottom-up
+
+    const lines: HexagramLine[] = allBits.map((bit, idx) => {
+        const lineNum = idx + 1;   // 1-indexed bottom-up
+        const yin = bit === '0';
+        const changing = changingLines.includes(lineNum);
+        let value: 6 | 7 | 8 | 9;
+        if (yin && changing) value = 6;
+        else if (yin) value = 8;
+        else if (changing) value = 9;
+        else value = 7;
+        return { value, yin, changing };
+    });
+
+    const primaryNum = hexagramNumberFromBits(allBits.map(b => b).join(''));
+    const primary = getHexagram(primaryNum);
+    const relating = changingLines.length > 0
+        ? getHexagram(hexagramNumberFromBits(
+            lines.map(l => (l.changing ? (l.yin ? '1' : '0') : (l.yin ? '0' : '1'))).join(''),
+        ))
+        : null;
+
+    return { lines, primary, relating, changingLines: [...changingLines].sort((a, b) => a - b) };
+}
+
+export function dayHexagram(d: Date, method: DayMethod = 'plum-blossom'): HexagramCast {
+    const y = d.getFullYear();
+    const m = d.getMonth() + 1;
+    const day = d.getDate();
+    const hour = d.getHours();
+
+    if (method === 'ymd-hash') {
+        const seed = y * 372 + m * 31 + day;
+        const upperNum = ((seed) % 8) + 1;
+        const lowerNum = ((seed * 7 + 3) % 8) + 1;
+        return castFromTrigrams(trigramByBagua(upperNum), trigramByBagua(lowerNum), []);
+    }
+
+    // Plum Blossom
+    const upperNum = ((y + m + day) % 8) + 1;
+    const lowerNum = ((y + m + day + hour) % 8) + 1;
+    const changingLine = ((y + m + day + hour) % 6) + 1;   // 1..6
+    return castFromTrigrams(trigramByBagua(upperNum), trigramByBagua(lowerNum), [changingLine]);
+}
+
+/* Manual: build a cast from a known hexagram number + optional changing lines. */
+export function manualHexagram(num: number, changingLines: number[] = []): HexagramCast {
+    if (num < 1 || num > 64) throw new Error(`Hexagram number must be 1..64 (got ${num})`);
+    // Reverse-lookup binary from the registry
+    const entry = Object.entries(HEXAGRAMS).find(([k]) => Number(k) === num);
+    if (!entry) throw new Error(`Hexagram ${num} not defined`);
+    const info = entry[1];
+    return castFromTrigrams(info.upper, info.lower, changingLines.filter(n => n >= 1 && n <= 6));
+}
+
+/* Builds the fulltext query string for line-N drill-down lookups against
+ * Neo4j's interpretation_text index. Public so the modal can preview it. */
+export function hexagramLineQuery(hexagramNumber: number, hexagramName: string, line?: number): string {
+    const base = `"Hexagram ${hexagramNumber}" OR "${hexagramName}"`;
+    if (!Number.isFinite(line)) return base;
+    return `(${base}) AND ("Line-${line}" OR "Line ${line}")`;
+}
+
 export function formatCast(cast: HexagramCast): string {
     const lines = [
         `# Hexagram ${cast.primary.number}: ${cast.primary.name} (${cast.primary.chinese})`,

@@ -19,7 +19,10 @@ import {
 import {
     calculateKi, calculatePersonalCycle, formatKiReport,
 } from './src/techniques/ki';
-import { castHexagram, formatCast } from './src/techniques/hexagram';
+import {
+    castHexagram, dayHexagram, formatCast, getHexagram, hexagramLineQuery,
+    HexagramCast, HexagramInfo, HexagramLine, manualHexagram,
+} from './src/techniques/hexagram';
 
 import {
     KnowledgeBackend, NullKnowledgeBackend, formatChunks,
@@ -61,6 +64,8 @@ export default class MoonPlugin extends Plugin {
         getTodaysKi: this.getTodaysKi.bind(this),
         getNatalKi: this.getNatalKi.bind(this),
         getDailyHexagram: this.getDailyHexagram.bind(this),
+        getDayHexagram: this.getDayHexagram.bind(this),
+        lookupHexagram: this.lookupHexagram.bind(this),
         getMidpointTransits: this.getMidpointTransits.bind(this),
         getNextEclipse: this.getNextEclipse.bind(this),
         getDashas: this.getDashas.bind(this),
@@ -203,7 +208,7 @@ export default class MoonPlugin extends Plugin {
 
         this.addCommand({
             id: 'cast-hexagram',
-            name: 'Cast Hexagram',
+            name: 'Cast Hexagram (insert at cursor)',
             editorCallback: (editor: Editor) => {
                 if (!this.settings.techniques.hexagram) {
                     new Notice('Enable "Hexagram" in the Techniques settings tab first.');
@@ -211,6 +216,18 @@ export default class MoonPlugin extends Plugin {
                 }
                 this.getDailyHexagram().then(text => editor.replaceSelection(text))
                     .catch(err => this.handleError(editor, 'hexagram', err));
+            },
+        });
+
+        this.addCommand({
+            id: 'open-hexagram-modal',
+            name: 'Hexagram Oracle (modal — cast / manual / day)',
+            editorCallback: (editor: Editor) => {
+                if (!this.settings.techniques.hexagram) {
+                    new Notice('Enable "Hexagram" in the Techniques settings tab first.');
+                    return;
+                }
+                new HexagramModal(this.app, this, editor).open();
             },
         });
 
@@ -546,11 +563,11 @@ export default class MoonPlugin extends Plugin {
     async getDailyHexagram(): Promise<string> {
         const cast = castHexagram();
         const base = formatCast(cast);
-        if (!this.knowledge.isConfigured() || !this.settings.knowledge.hexagramSource) {
+        if (!this.knowledge.isConfigured() || !this.settings.oracle.hexagramSource) {
             return base;
         }
         try {
-            const sourceTitle = this.settings.knowledge.hexagramSource;
+            const sourceTitle = this.settings.oracle.hexagramSource;
             const primary = await this.lookupHexagramText(cast.primary.number, cast.primary.name, sourceTitle);
             const relating = cast.relating
                 ? await this.lookupHexagramText(cast.relating.number, cast.relating.name, sourceTitle)
@@ -567,6 +584,29 @@ export default class MoonPlugin extends Plugin {
             console.warn('obsidian-moon: hexagram knowledge lookup failed', err);
             return base;
         }
+    }
+
+    /** Pure-TS: derive the day's hexagram using the configured day method. */
+    getDayHexagram(date: Date = new Date()): HexagramCast {
+        return dayHexagram(date, this.settings.oracle.dayMethod);
+    }
+
+    /** Knowledge graph lookup for a specific hexagram (and optional line),
+     * scoped to the configured oracle source. */
+    async lookupHexagram(number: number, line?: number): Promise<string> {
+        if (!this.knowledge.isConfigured()) return '';
+        const info = getHexagram(number);
+        const sourceTitle = this.settings.oracle.hexagramSource;
+        const chunks = await this.knowledge.search({
+            query: hexagramLineQuery(number, info.name, line),
+            tradition: 'iching',
+            limit: line ? 2 : 3,
+            ...({ sourceTitle } as any),
+        });
+        return chunks.map(c => {
+            const t = c.text.length > 1500 ? c.text.slice(0, 1500) + '…' : c.text;
+            return t;
+        }).join('\n\n---\n\n');
     }
 
     /** Internal: pull the configured source's text for a specific hexagram. */
@@ -802,7 +842,7 @@ export default class MoonPlugin extends Plugin {
  * Settings UI — tabbed, follows the Periodic Ritual pattern
  * ──────────────────────────────────────────────────────────────────────── */
 
-type TabId = 'general' | 'chart' | 'planets' | 'aspects' | 'techniques' | 'knowledge' | 'llm';
+type TabId = 'general' | 'chart' | 'planets' | 'aspects' | 'techniques' | 'oracle' | 'knowledge' | 'llm';
 
 interface NominatimResult {
     display_name: string;
@@ -841,6 +881,7 @@ class MoonSettingTab extends PluginSettingTab {
             { id: 'planets', label: 'Planets' },
             { id: 'aspects', label: 'Aspects' },
             { id: 'techniques', label: 'Techniques' },
+            { id: 'oracle', label: 'Oracle' },
             { id: 'knowledge', label: 'Knowledge' },
             { id: 'llm', label: 'LLM' },
         ];
@@ -864,6 +905,7 @@ class MoonSettingTab extends PluginSettingTab {
             case 'planets':    this.renderPlanets(body); break;
             case 'aspects':    this.renderAspects(body); break;
             case 'techniques': this.renderTechniques(body); break;
+            case 'oracle':     this.renderOracle(body); break;
             case 'knowledge':  this.renderKnowledge(body); break;
             case 'llm':        this.renderLLM(body); break;
         }
@@ -1322,6 +1364,67 @@ class MoonSettingTab extends PluginSettingTab {
                 }));
     }
 
+    /* ── Oracle ── */
+    private renderOracle(c: HTMLElement) {
+        c.createEl('p', {
+            cls: 'moon-tab-intro',
+            text: 'Divination tools. Currently I Ching via the Hexagram Oracle modal; Tarot is on the roadmap. Interpretations are pulled from the configured source in your knowledge graph (default: the Gnostic Book of Changes by James DeKorne / Michael Servetus — public-domain at jamesdekorne.com).',
+        });
+
+        c.createEl('h3', { text: 'I Ching' });
+
+        new Setting(c)
+            .setName('Interpretation source')
+            .setDesc('Source title (substring match) used when looking up hexagram and line interpretations in the knowledge graph. Default: "Gnostic Book of Changes". Filtered by tradition = "iching".')
+            .addText(t => t
+                .setPlaceholder('Gnostic Book of Changes')
+                .setValue(this.plugin.settings.oracle.hexagramSource)
+                .onChange(async (v) => {
+                    this.plugin.settings.oracle.hexagramSource = v.trim();
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(c)
+            .setName('"From the day" method')
+            .setDesc('How the modal derives a hexagram for "From the day". Plum Blossom uses year+month+day for the trigrams and year+month+day+hour for the changing line (always 1 changing line). YMD hash is a stable daily hexagram with no changing lines.')
+            .addDropdown(dd => {
+                dd.addOption('plum-blossom', 'Plum Blossom (year+month+day+hour)');
+                dd.addOption('ymd-hash', 'YMD hash (stable daily, no changing line)');
+                dd.setValue(this.plugin.settings.oracle.dayMethod);
+                dd.onChange(async (v) => {
+                    this.plugin.settings.oracle.dayMethod = v as any;
+                    await this.plugin.saveSettings();
+                });
+            });
+
+        new Setting(c)
+            .setName('Journal folder')
+            .setDesc('Vault folder where oracle casts are saved when you click "Save to journal" in the modal.')
+            .addText(t => t
+                .setPlaceholder('ObsidianMoon/oracle')
+                .setValue(this.plugin.settings.oracle.journalFolder)
+                .onChange(async (v) => {
+                    this.plugin.settings.oracle.journalFolder = v.trim();
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(c)
+            .setName('Autosave every cast')
+            .setDesc('When on, every cast from the modal is silently saved to the journal folder. When off, you have to click "Save to journal" explicitly.')
+            .addToggle(t => t
+                .setValue(this.plugin.settings.oracle.autosaveCasts)
+                .onChange(async (v) => {
+                    this.plugin.settings.oracle.autosaveCasts = v;
+                    await this.plugin.saveSettings();
+                }));
+
+        const tarotHint = c.createEl('p', { cls: 'moon-tab-intro' });
+        tarotHint.style.marginTop = '20px';
+        tarotHint.style.borderTop = '1px solid var(--background-modifier-border)';
+        tarotHint.style.paddingTop = '14px';
+        tarotHint.innerHTML = '<strong>Tarot</strong> — on the roadmap. Will land in this tab when ready.';
+    }
+
     /* ── Knowledge ── */
     private renderKnowledge(c: HTMLElement) {
         c.createEl('p', {
@@ -1414,17 +1517,6 @@ class MoonSettingTab extends PluginSettingTab {
                     .setDynamicTooltip()
                     .onChange(async (v) => {
                         this.plugin.settings.knowledge.defaultResultLimit = v;
-                        await this.plugin.saveSettings();
-                    }));
-
-            new Setting(c)
-                .setName('Hexagram interpretation source')
-                .setDesc('Source title (substring match) for Cast Hexagram lookups. Default: "Gnostic Book of Changes" (DeKorne / Michael Servetus — public-domain at jamesdekorne.com). Filtered by tradition = "iching".')
-                .addText(t => t
-                    .setPlaceholder('Gnostic Book of Changes')
-                    .setValue(this.plugin.settings.knowledge.hexagramSource)
-                    .onChange(async (v) => {
-                        this.plugin.settings.knowledge.hexagramSource = v.trim();
                         await this.plugin.saveSettings();
                     }));
 
@@ -1769,4 +1861,395 @@ class KnowledgeSearchModal extends Modal {
     }
 
     onClose() { this.contentEl.empty(); }
+}
+
+/* ──────────────────────────────────────────────────────────────────────── *
+ * Hexagram Oracle modal — Cast / Manual / Day, with line-by-line drill-down
+ * sourced from the configured oracle (default: Gnostic Book of Changes)
+ * ──────────────────────────────────────────────────────────────────────── */
+
+type HexagramMode = 'cast' | 'manual' | 'day';
+
+class HexagramModal extends Modal {
+    plugin: MoonPlugin;
+    editor: Editor;
+    private mode: HexagramMode = 'cast';
+    private question = '';
+    private cast: HexagramCast | null = null;
+    private manualNumber = 1;
+    private manualLines: number[] = [];
+    private bodyEl: HTMLDivElement | null = null;
+    private lineCache: Map<string, string> = new Map();
+
+    constructor(app: App, plugin: MoonPlugin, editor: Editor) {
+        super(app);
+        this.plugin = plugin;
+        this.editor = editor;
+        this.modalEl.addClass('moon-hexagram-modal');
+    }
+
+    onOpen() {
+        const { contentEl } = this;
+        contentEl.empty();
+        contentEl.createEl('h2', { text: 'Hexagram Oracle' });
+
+        /* ── Question (optional) ── */
+        const questionWrap = contentEl.createDiv({ cls: 'moon-hex-question' });
+        questionWrap.createEl('label', { text: 'Question (optional)' });
+        const q = questionWrap.createEl('input', {
+            type: 'text',
+            placeholder: 'What is the moment about?',
+        }) as HTMLInputElement;
+        q.addEventListener('input', () => { this.question = q.value; });
+
+        /* ── Mode toggle ── */
+        const modeRow = contentEl.createDiv({ cls: 'moon-hex-mode-row' });
+        const modes: Array<{ id: HexagramMode; label: string }> = [
+            { id: 'cast', label: 'Cast' },
+            { id: 'manual', label: 'Manual' },
+            { id: 'day', label: 'From the day' },
+        ];
+        for (const m of modes) {
+            const btn = modeRow.createEl('button', {
+                text: m.label,
+                cls: 'moon-hex-mode' + (this.mode === m.id ? ' moon-hex-mode-active' : ''),
+            });
+            btn.addEventListener('click', () => {
+                this.mode = m.id;
+                this.cast = null;
+                this.renderBody();
+            });
+        }
+
+        this.bodyEl = contentEl.createDiv({ cls: 'moon-hex-body' });
+        this.renderBody();
+
+        /* ── Footer ── */
+        const footer = contentEl.createDiv({ cls: 'moon-hex-footer' });
+        footer.createEl('button', { text: 'Recast', cls: 'moon-hex-btn' })
+            .addEventListener('click', () => { this.cast = null; this.renderBody(); });
+
+        const insertWrap = footer.createDiv({ cls: 'moon-hex-insert-wrap' });
+        const formatSel = insertWrap.createEl('select', { cls: 'dropdown' }) as HTMLSelectElement;
+        for (const [v, t] of [
+            ['compact', 'Compact'],
+            ['full', 'Full reading'],
+            ['llm', 'LLM-synthesized'],
+        ]) {
+            formatSel.createEl('option', { value: v, text: t });
+        }
+        const insertBtn = insertWrap.createEl('button', { text: 'Insert', cls: 'mod-cta' });
+        insertBtn.addEventListener('click', () => this.insert(formatSel.value as 'compact' | 'full' | 'llm', insertBtn));
+
+        const saveBtn = footer.createEl('button', { text: 'Save to journal', cls: 'moon-hex-btn' });
+        saveBtn.addEventListener('click', () => this.saveToJournal(saveBtn));
+
+        footer.createEl('button', { text: 'Close', cls: 'moon-hex-btn' }).addEventListener('click', () => this.close());
+    }
+
+    onClose() { this.contentEl.empty(); }
+
+    /* ── Body render: cast-mode generation + always-rendered cast view ── */
+    private renderBody() {
+        if (!this.bodyEl) return;
+        this.bodyEl.empty();
+        this.lineCache.clear();
+
+        if (this.mode === 'cast') {
+            if (!this.cast) this.cast = castHexagram();
+        } else if (this.mode === 'day') {
+            if (!this.cast) this.cast = this.plugin.getDayHexagram();
+        } else if (this.mode === 'manual') {
+            this.renderManualPicker();
+            return;
+        }
+
+        this.renderCast();
+        if (this.plugin.settings.oracle.autosaveCasts && this.cast) {
+            void this.saveToJournal(null).catch(() => { /* ignore */ });
+        }
+    }
+
+    private renderManualPicker() {
+        const wrap = this.bodyEl!.createDiv({ cls: 'moon-hex-manual' });
+        wrap.createEl('p', {
+            cls: 'moon-tab-intro',
+            text: 'Pick a hexagram by number (1–64) and optional changing lines.',
+        });
+
+        new Setting(wrap)
+            .setName('Hexagram number')
+            .addText(t => t
+                .setPlaceholder('1–64')
+                .setValue(String(this.manualNumber))
+                .onChange(v => {
+                    const n = parseInt(v, 10);
+                    if (Number.isFinite(n) && n >= 1 && n <= 64) this.manualNumber = n;
+                }));
+
+        new Setting(wrap)
+            .setName('Changing lines (comma-separated, 1–6)')
+            .addText(t => t
+                .setPlaceholder('e.g. 1,3,5')
+                .setValue(this.manualLines.join(','))
+                .onChange(v => {
+                    this.manualLines = v.split(',')
+                        .map(s => parseInt(s.trim(), 10))
+                        .filter(n => n >= 1 && n <= 6);
+                }));
+
+        new Setting(wrap).addButton(b => b
+            .setButtonText('Build hexagram')
+            .setCta()
+            .onClick(() => {
+                try {
+                    this.cast = manualHexagram(this.manualNumber, this.manualLines);
+                    this.bodyEl!.empty();
+                    this.renderCast();
+                } catch (err: any) {
+                    new Notice(`Couldn't build: ${err?.message ?? err}`, 6000);
+                }
+            }));
+    }
+
+    private renderCast() {
+        if (!this.cast || !this.bodyEl) return;
+        const cast = this.cast;
+
+        /* ── Visual hexagram + header ── */
+        const head = this.bodyEl.createDiv({ cls: 'moon-hex-head' });
+        const figure = head.createDiv({ cls: 'moon-hex-figure' });
+        this.renderHexagramVisual(figure, cast.lines);
+
+        const info = head.createDiv({ cls: 'moon-hex-info' });
+        info.createEl('h3', {
+            text: `Hexagram ${cast.primary.number} · ${cast.primary.name}`,
+            cls: 'moon-hex-name',
+        });
+        info.createEl('p', {
+            text: `${cast.primary.chinese} · ${cast.primary.upper} above, ${cast.primary.lower} below`,
+            cls: 'moon-hex-meta',
+        });
+        info.createEl('p', { text: cast.primary.judgment, cls: 'moon-hex-judgment' });
+        if (cast.changingLines.length > 0) {
+            info.createEl('p', {
+                text: `Changing lines: ${cast.changingLines.join(', ')}`,
+                cls: 'moon-hex-changing',
+            });
+        }
+
+        /* ── Per-line drill-down ── */
+        const linesEl = this.bodyEl.createDiv({ cls: 'moon-hex-lines' });
+        linesEl.createEl('h4', { text: 'Lines (click to expand)' });
+        for (let lineNum = 1; lineNum <= 6; lineNum++) {
+            this.renderLineRow(linesEl, cast.primary, lineNum, cast.changingLines.includes(lineNum));
+        }
+
+        /* ── Full DeKorne entry (collapsible) ── */
+        const fullSection = this.bodyEl.createEl('details', { cls: 'moon-hex-full' });
+        fullSection.createEl('summary', {
+            text: `Full ${this.plugin.settings.oracle.hexagramSource} entry`,
+        });
+        const fullBody = fullSection.createDiv({ cls: 'moon-hex-full-body', text: 'Loading…' });
+        fullSection.addEventListener('toggle', () => {
+            if (fullSection.open && fullBody.textContent === 'Loading…') {
+                this.plugin.lookupHexagram(cast.primary.number)
+                    .then(text => { fullBody.empty(); fullBody.createEl('pre', { text: text || '(no chunks found)' }); })
+                    .catch(err => { fullBody.empty(); fullBody.createEl('p', { text: `Lookup failed: ${err?.message ?? err}` }); });
+            }
+        });
+
+        /* ── Relating hexagram ── */
+        if (cast.relating) {
+            const rel = this.bodyEl.createEl('details', { cls: 'moon-hex-relating' });
+            rel.createEl('summary', {
+                text: `Changing into: Hexagram ${cast.relating.number} · ${cast.relating.name}`,
+            });
+            const relBody = rel.createDiv({ cls: 'moon-hex-relating-body' });
+            relBody.createEl('p', {
+                text: `${cast.relating.chinese} · ${cast.relating.upper} above, ${cast.relating.lower} below`,
+                cls: 'moon-hex-meta',
+            });
+            relBody.createEl('p', { text: cast.relating.judgment, cls: 'moon-hex-judgment' });
+
+            const relText = relBody.createDiv({ text: 'Loading…' });
+            rel.addEventListener('toggle', () => {
+                if (rel.open && relText.textContent === 'Loading…') {
+                    this.plugin.lookupHexagram(cast.relating!.number)
+                        .then(text => { relText.empty(); relText.createEl('pre', { text: text || '(no chunks found)' }); })
+                        .catch(err => { relText.empty(); relText.createEl('p', { text: `Lookup failed: ${err?.message ?? err}` }); });
+                }
+            });
+        }
+    }
+
+    private renderHexagramVisual(parent: HTMLDivElement, lines: HexagramLine[]) {
+        // Top to bottom (so line 6 renders first)
+        for (let i = 5; i >= 0; i--) {
+            const l = lines[i];
+            const lineEl = parent.createDiv({ cls: 'moon-hex-line' });
+            if (l.yin) {
+                lineEl.addClass('moon-hex-line-yin');
+                lineEl.createSpan({ cls: 'moon-hex-half' });
+                if (l.changing) lineEl.createSpan({ cls: 'moon-hex-x', text: '×' });
+                else lineEl.createSpan({ cls: 'moon-hex-gap' });
+                lineEl.createSpan({ cls: 'moon-hex-half' });
+            } else {
+                lineEl.addClass('moon-hex-line-yang');
+                const span = lineEl.createSpan({ cls: 'moon-hex-solid' });
+                if (l.changing) span.createSpan({ cls: 'moon-hex-o', text: '○' });
+            }
+        }
+    }
+
+    private renderLineRow(parent: HTMLElement, info: HexagramInfo, lineNum: number, isChanging: boolean) {
+        const details = parent.createEl('details', { cls: 'moon-hex-line-row' });
+        if (isChanging) details.addClass('moon-hex-line-changing');
+        const summary = details.createEl('summary');
+        summary.setText(`Line ${lineNum}${isChanging ? ' · changing' : ''}`);
+        const body = details.createDiv({ cls: 'moon-hex-line-body', text: 'Loading…' });
+        details.addEventListener('toggle', () => {
+            if (!details.open || body.textContent !== 'Loading…') return;
+            const cacheKey = `${info.number}-${lineNum}`;
+            if (this.lineCache.has(cacheKey)) {
+                body.empty();
+                body.createEl('pre', { text: this.lineCache.get(cacheKey)! });
+                return;
+            }
+            this.plugin.lookupHexagram(info.number, lineNum).then(text => {
+                body.empty();
+                if (text) {
+                    this.lineCache.set(cacheKey, text);
+                    body.createEl('pre', { text });
+                } else {
+                    body.createEl('p', {
+                        text: `(No chunks found for Hexagram ${info.number}, Line ${lineNum}. Try the "Full entry" section above.)`,
+                        cls: 'moon-tab-intro',
+                    });
+                }
+            }).catch(err => {
+                body.empty();
+                body.createEl('p', { text: `Lookup failed: ${err?.message ?? err}` });
+            });
+        });
+    }
+
+    /* ── Insert: compact / full / LLM ── */
+    private async insert(format: 'compact' | 'full' | 'llm', btn: HTMLButtonElement) {
+        if (!this.cast) { new Notice('Nothing cast yet.'); return; }
+        btn.disabled = true;
+        btn.setText('Working…');
+        try {
+            let text = '';
+            if (format === 'compact') {
+                text = formatCast(this.cast);
+            } else if (format === 'full') {
+                text = await this.buildFullReading();
+            } else {
+                text = await this.buildLLMReading();
+            }
+            if (this.question.trim()) {
+                text = `**Question:** ${this.question.trim()}\n\n${text}`;
+            }
+            this.editor.replaceSelection(text);
+            this.close();
+        } catch (err: any) {
+            new Notice(`Insert failed: ${err?.message ?? err}`, 8000);
+            btn.disabled = false;
+            btn.setText('Insert');
+        }
+    }
+
+    private async buildFullReading(): Promise<string> {
+        if (!this.cast) return '';
+        const sections: string[] = [formatCast(this.cast)];
+        if (this.plugin.knowledge.isConfigured()) {
+            const source = this.plugin.settings.oracle.hexagramSource;
+            // Primary hexagram full text + each changing line's text
+            const primaryFull = await this.plugin.lookupHexagram(this.cast.primary.number);
+            if (primaryFull) {
+                sections.push('', `## ${source} — Hexagram ${this.cast.primary.number}`, '', primaryFull);
+            }
+            for (const ln of this.cast.changingLines) {
+                const lineText = await this.plugin.lookupHexagram(this.cast.primary.number, ln);
+                if (lineText) {
+                    sections.push('', `### Line ${ln}`, '', lineText);
+                }
+            }
+            if (this.cast.relating) {
+                const relText = await this.plugin.lookupHexagram(this.cast.relating.number);
+                if (relText) {
+                    sections.push('', `## ${source} — Relating: Hexagram ${this.cast.relating.number}`, '', relText);
+                }
+            }
+        }
+        return sections.join('\n');
+    }
+
+    private async buildLLMReading(): Promise<string> {
+        if (!this.cast) return '';
+        if (!this.plugin.llm.isConfigured()) {
+            new Notice('LLM not configured — falling back to full reading.', 5000);
+            return this.buildFullReading();
+        }
+        const compact = formatCast(this.cast);
+        const knowledge = await this.gatherCastKnowledge();
+        const systemPrompt = `You are interpreting an I Ching cast. The user has cast a hexagram. Their question (if any), the cast, and source-grounded interpretation chunks are provided. Write a focused 2-4 paragraph reading that answers the question through the lens of the cast, drawing on the sources for grounding without quoting them at length.`;
+        const userMsg = `## Question
+${this.question.trim() || '_(no specific question)_'}
+
+## Cast
+${compact}
+
+## Source material
+${knowledge || '_(no chunks retrieved)_'}`;
+        return this.plugin.llm.complete({
+            model: this.plugin.settings.llm.model,
+            messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userMsg },
+            ],
+            maxTokens: this.plugin.settings.llm.maxTokens,
+            temperature: this.plugin.settings.llm.temperature,
+        });
+    }
+
+    private async gatherCastKnowledge(): Promise<string> {
+        if (!this.cast || !this.plugin.knowledge.isConfigured()) return '';
+        const parts: string[] = [];
+        const primary = await this.plugin.lookupHexagram(this.cast.primary.number);
+        if (primary) parts.push(`### Hexagram ${this.cast.primary.number}\n${primary}`);
+        for (const ln of this.cast.changingLines) {
+            const t = await this.plugin.lookupHexagram(this.cast.primary.number, ln);
+            if (t) parts.push(`### Line ${ln}\n${t}`);
+        }
+        if (this.cast.relating) {
+            const rel = await this.plugin.lookupHexagram(this.cast.relating.number);
+            if (rel) parts.push(`### Changing into ${this.cast.relating.number}\n${rel}`);
+        }
+        return parts.join('\n\n');
+    }
+
+    private async saveToJournal(btn: HTMLButtonElement | null) {
+        if (!this.cast) { new Notice('Nothing cast yet.'); return; }
+        const folder = this.plugin.settings.oracle.journalFolder;
+        if (!folder) { new Notice('Set an oracle journal folder in Oracle settings first.'); return; }
+        if (btn) { btn.disabled = true; btn.setText('Saving…'); }
+        try {
+            const ts = new Date().toISOString();
+            const slug = `hex-${this.cast.primary.number}-${this.cast.relating ? `to-${this.cast.relating.number}` : 'stable'}`;
+            await saveMemoryRecord(this.app, folder, {
+                chart: 'oracle',
+                kind: 'interpret-placement',
+                timestamp: ts,
+                placement: `Hexagram ${this.cast.primary.number} (${this.mode} mode)`,
+                notes: this.question.trim() || undefined,
+                body: `${this.question.trim() ? `**Question:** ${this.question.trim()}\n\n` : ''}${formatCast(this.cast)}`,
+            });
+            if (btn) { new Notice('Saved to journal.'); btn.disabled = false; btn.setText('Save to journal'); }
+        } catch (err: any) {
+            new Notice(`Save failed: ${err?.message ?? err}`, 8000);
+            if (btn) { btn.disabled = false; btn.setText('Save to journal'); }
+        }
+    }
 }

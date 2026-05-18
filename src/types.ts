@@ -175,6 +175,16 @@ export interface TechniqueSettings {
     dashas: boolean;
 }
 
+export type DayHexagramMethod = 'plum-blossom' | 'ymd-hash';
+
+/* Oracle settings — currently I Ching only. Tarot will land here later. */
+export interface OracleSettings {
+    hexagramSource: string;          // source_title CONTAINS filter for DeKorne lookup
+    journalFolder: string;           // vault folder for saved casts
+    dayMethod: DayHexagramMethod;    // how "From the day" derives a hexagram
+    autosaveCasts: boolean;          // when on, every modal cast is journaled
+}
+
 export type LLMProviderId = 'off' | 'openai' | 'anthropic' | 'ollama';
 
 export interface LLMSettings {
@@ -208,6 +218,7 @@ export interface MoonPluginSettings {
     serverUrl: string;
     knowledge: KnowledgeSettings;
     llm: LLMSettings;
+    oracle: OracleSettings;
     // ── Charts ──
     trackedCharts: string[];          // saved-chart names the user cares about
     defaultChart: string;             // one of trackedCharts; used when a command needs a single chart
@@ -247,6 +258,12 @@ export const DEFAULT_SETTINGS: MoonPluginSettings = {
         neo4jIndexName: 'interpretation_text',
         defaultResultLimit: 5,
         hexagramSource: 'Gnostic Book of Changes',
+    },
+    oracle: {
+        hexagramSource: 'Gnostic Book of Changes',
+        journalFolder: 'ObsidianMoon/oracle',
+        dayMethod: 'plum-blossom',
+        autosaveCasts: false,
     },
     llm: {
         provider: 'off',

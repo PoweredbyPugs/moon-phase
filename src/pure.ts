@@ -42,6 +42,14 @@ export function migrateSettings(raw: any): MoonPluginSettings {
             techniques: { ...DEFAULT_SETTINGS.techniques, ...(raw.techniques || {}) },
             knowledge: { ...DEFAULT_SETTINGS.knowledge, ...(raw.knowledge || {}) },
             llm: { ...DEFAULT_SETTINGS.llm, ...(raw.llm || {}) },
+            // v1.3.1 → v1.4: oracle settings extracted from knowledge.hexagramSource
+            oracle: {
+                ...DEFAULT_SETTINGS.oracle,
+                ...(raw.oracle || {}),
+                hexagramSource: raw.oracle?.hexagramSource
+                    ?? raw.knowledge?.hexagramSource
+                    ?? DEFAULT_SETTINGS.oracle.hexagramSource,
+            },
         };
     }
 

@@ -4,8 +4,8 @@ import {
     formatKiReport, kiTrigram,
 } from '../techniques/ki';
 import {
-    allHexagramBindings, castHexagram, castLine, formatCast, getHexagram,
-    hexagramNumberFromBits, renderHexagram,
+    allHexagramBindings, castHexagram, castLine, dayHexagram, formatCast, getHexagram,
+    hexagramLineQuery, hexagramNumberFromBits, manualHexagram, renderHexagram,
 } from '../techniques/hexagram';
 
 /* ── Ki ── */
@@ -182,5 +182,88 @@ describe('Hexagram: renderHexagram + formatCast', () => {
         expect(text).toContain('The Receptive');
         expect(text).toContain('Changing into 1');
         expect(text).toContain('The Creative');
+    });
+});
+
+/* ── Day hexagram + manual hexagram + line query ── */
+
+describe('manualHexagram', () => {
+    it('returns the requested hexagram with no changing lines by default', () => {
+        const h = manualHexagram(11);
+        expect(h.primary.number).toBe(11);
+        expect(h.primary.name).toBe('Peace');
+        expect(h.changingLines).toEqual([]);
+        expect(h.relating).toBeNull();
+    });
+
+    it('honors changing-line input and computes the relating hexagram', () => {
+        const h = manualHexagram(1, [1]);   // Heaven with line 1 changing → Wind below Heaven = 44
+        expect(h.primary.number).toBe(1);
+        expect(h.changingLines).toEqual([1]);
+        expect(h.relating?.number).toBe(44);
+    });
+
+    it('filters out-of-range line numbers', () => {
+        const h = manualHexagram(2, [0, 7, 3]);
+        expect(h.changingLines).toEqual([3]);
+    });
+
+    it('throws for invalid hexagram numbers', () => {
+        expect(() => manualHexagram(0)).toThrow();
+        expect(() => manualHexagram(65)).toThrow();
+    });
+});
+
+describe('dayHexagram', () => {
+    it('is deterministic for the same date+hour (plum-blossom)', () => {
+        const d = new Date(2026, 4, 17, 22, 0);   // 2026-05-17 22:00
+        const a = dayHexagram(d, 'plum-blossom');
+        const b = dayHexagram(d, 'plum-blossom');
+        expect(a.primary.number).toBe(b.primary.number);
+        expect(a.changingLines).toEqual(b.changingLines);
+    });
+
+    it('plum-blossom yields exactly one changing line', () => {
+        const d = new Date(2026, 4, 17, 22, 0);
+        const h = dayHexagram(d, 'plum-blossom');
+        expect(h.changingLines).toHaveLength(1);
+        expect(h.relating).not.toBeNull();
+    });
+
+    it('ymd-hash yields no changing lines (stable across the day)', () => {
+        const morning = new Date(2026, 4, 17, 6, 0);
+        const night = new Date(2026, 4, 17, 23, 0);
+        const a = dayHexagram(morning, 'ymd-hash');
+        const b = dayHexagram(night, 'ymd-hash');
+        expect(a.primary.number).toBe(b.primary.number);
+        expect(a.changingLines).toEqual([]);
+        expect(b.changingLines).toEqual([]);
+    });
+
+    it('returns a valid hexagram (1..64) for arbitrary dates', () => {
+        for (const date of [
+            new Date(1970, 0, 1, 0, 0),
+            new Date(1986, 4, 1, 14, 35),
+            new Date(2030, 11, 31, 23, 59),
+        ]) {
+            const h = dayHexagram(date);
+            expect(h.primary.number).toBeGreaterThanOrEqual(1);
+            expect(h.primary.number).toBeLessThanOrEqual(64);
+        }
+    });
+});
+
+describe('hexagramLineQuery', () => {
+    it('builds a hexagram-only query when no line specified', () => {
+        const q = hexagramLineQuery(17, 'Following');
+        expect(q).toContain('Hexagram 17');
+        expect(q).toContain('Following');
+        expect(q).not.toContain('Line-');
+    });
+    it('adds a line-N clause when a line is specified', () => {
+        const q = hexagramLineQuery(17, 'Following', 3);
+        expect(q).toContain('Hexagram 17');
+        expect(q).toContain('Line-3');
+        expect(q).toContain('Line 3');
     });
 });
