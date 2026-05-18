@@ -195,11 +195,13 @@ export type KnowledgeBackendId = 'off' | 'neo4j';
 
 export interface KnowledgeSettings {
     backend: KnowledgeBackendId;
-    neo4jUri: string;
+    neo4jHttpUri: string;       // http://localhost:7474
+    neo4jDatabase: string;       // default 'neo4j'
     neo4jUser: string;
     neo4jPassword: string;
     neo4jIndexName: string;
     defaultResultLimit: number;
+    hexagramSource: string;      // i.e. "Gnostic Book of Changes" — used to scope hexagram lookups
 }
 
 export interface MoonPluginSettings {
@@ -209,8 +211,6 @@ export interface MoonPluginSettings {
     // ── Charts ──
     trackedCharts: string[];          // saved-chart names the user cares about
     defaultChart: string;             // one of trackedCharts; used when a command needs a single chart
-    // selectedChart is the v1.2 name kept as an alias for defaultChart so existing settings keep working
-    selectedChart?: string;
     // ── Aspect / transit behavior ──
     useNatalChart: boolean;           // when on + defaultChart set, aspect commands hit /transits/:name/now
     majorOnly: boolean;
@@ -240,11 +240,13 @@ export const DEFAULT_SETTINGS: MoonPluginSettings = {
     cycleLookaheadMonths: 6,
     knowledge: {
         backend: 'off',
-        neo4jUri: 'bolt://localhost:7687',
+        neo4jHttpUri: 'http://localhost:7474',
+        neo4jDatabase: 'neo4j',
         neo4jUser: 'neo4j',
         neo4jPassword: '',
         neo4jIndexName: 'interpretation_text',
         defaultResultLimit: 5,
+        hexagramSource: 'Gnostic Book of Changes',
     },
     llm: {
         provider: 'off',

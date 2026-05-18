@@ -209,7 +209,8 @@ export default class MoonPlugin extends Plugin {
                     new Notice('Enable "Hexagram" in the Techniques settings tab first.');
                     return;
                 }
-                editor.replaceSelection(this.getDailyHexagram());
+                this.getDailyHexagram().then(text => editor.replaceSelection(text))
+                    .catch(err => this.handleError(editor, 'hexagram', err));
             },
         });
 
@@ -420,9 +421,10 @@ export default class MoonPlugin extends Plugin {
     rebuildKnowledgeBackend() {
         const previous = this.knowledge;
         const ks = this.settings.knowledge;
-        if (ks.backend === 'neo4j' && ks.neo4jUri && ks.neo4jUser && ks.neo4jPassword) {
+        if (ks.backend === 'neo4j' && ks.neo4jHttpUri && ks.neo4jUser && ks.neo4jPassword) {
             this.knowledge = new Neo4jKnowledgeBackend({
-                uri: ks.neo4jUri,
+                httpUri: ks.neo4jHttpUri,
+                database: ks.neo4jDatabase,
                 user: ks.neo4jUser,
                 password: ks.neo4jPassword,
                 indexName: ks.neo4jIndexName,
@@ -537,9 +539,52 @@ export default class MoonPlugin extends Plugin {
         ].join('\n');
     }
 
-    /** Pure-TS: cast a hexagram. */
-    getDailyHexagram(): string {
-        return formatCast(castHexagram());
+    /** Cast a hexagram. The cast itself is pure-TS RNG (always deterministic
+     * structure). When a knowledge backend is configured, the formatted output
+     * also includes the configured hexagram source's interpretation chunks
+     * (defaults to "Gnostic Book of Changes" by James DeKorne / Michael Servetus). */
+    async getDailyHexagram(): Promise<string> {
+        const cast = castHexagram();
+        const base = formatCast(cast);
+        if (!this.knowledge.isConfigured() || !this.settings.knowledge.hexagramSource) {
+            return base;
+        }
+        try {
+            const sourceTitle = this.settings.knowledge.hexagramSource;
+            const primary = await this.lookupHexagramText(cast.primary.number, cast.primary.name, sourceTitle);
+            const relating = cast.relating
+                ? await this.lookupHexagramText(cast.relating.number, cast.relating.name, sourceTitle)
+                : null;
+            const sections: string[] = [base];
+            if (primary) {
+                sections.push('', `## From ${sourceTitle} — Hexagram ${cast.primary.number}`, '', primary);
+            }
+            if (relating) {
+                sections.push('', `## From ${sourceTitle} — Relating: Hexagram ${cast.relating!.number}`, '', relating);
+            }
+            return sections.join('\n');
+        } catch (err) {
+            console.warn('obsidian-moon: hexagram knowledge lookup failed', err);
+            return base;
+        }
+    }
+
+    /** Internal: pull the configured source's text for a specific hexagram. */
+    private async lookupHexagramText(number: number, name: string, sourceTitle: string): Promise<string> {
+        // Fulltext query — wraps in quotes for the Lucene parser used by Neo4j's index
+        const query = `"Hexagram ${number}" OR "${name}"`;
+        const chunks = await this.knowledge.search({
+            query,
+            tradition: 'iching',
+            limit: 3,
+            // Threaded through the typed-any escape hatch — Neo4jKnowledgeBackend reads this
+            ...({ sourceTitle } as any),
+        });
+        if (chunks.length === 0) return '';
+        return chunks.map(c => {
+            const truncated = c.text.length > 1200 ? c.text.slice(0, 1200) + '…' : c.text;
+            return truncated;
+        }).join('\n\n---\n\n');
     }
 
     /** Helios: midpoint transits to a saved chart. */
@@ -1301,13 +1346,25 @@ class MoonSettingTab extends PluginSettingTab {
 
         if (this.plugin.settings.knowledge.backend === 'neo4j') {
             new Setting(c)
-                .setName('Neo4j URI')
-                .setDesc('Bolt connection string (e.g. bolt://localhost:7687).')
+                .setName('Neo4j HTTP URI')
+                .setDesc('Neo4j HTTP endpoint (e.g. http://localhost:7474). The plugin talks Cypher over Neo4j\'s transactional HTTP API — no native driver dependency.')
                 .addText(t => t
-                    .setPlaceholder('bolt://localhost:7687')
-                    .setValue(this.plugin.settings.knowledge.neo4jUri)
+                    .setPlaceholder('http://localhost:7474')
+                    .setValue(this.plugin.settings.knowledge.neo4jHttpUri)
                     .onChange(async (v) => {
-                        this.plugin.settings.knowledge.neo4jUri = v.trim();
+                        this.plugin.settings.knowledge.neo4jHttpUri = v.trim();
+                        await this.plugin.saveSettings();
+                        this.plugin.rebuildKnowledgeBackend();
+                    }));
+
+            new Setting(c)
+                .setName('Database')
+                .setDesc('Neo4j database name (default: neo4j).')
+                .addText(t => t
+                    .setPlaceholder('neo4j')
+                    .setValue(this.plugin.settings.knowledge.neo4jDatabase)
+                    .onChange(async (v) => {
+                        this.plugin.settings.knowledge.neo4jDatabase = v.trim() || 'neo4j';
                         await this.plugin.saveSettings();
                         this.plugin.rebuildKnowledgeBackend();
                     }));
@@ -1357,6 +1414,17 @@ class MoonSettingTab extends PluginSettingTab {
                     .setDynamicTooltip()
                     .onChange(async (v) => {
                         this.plugin.settings.knowledge.defaultResultLimit = v;
+                        await this.plugin.saveSettings();
+                    }));
+
+            new Setting(c)
+                .setName('Hexagram interpretation source')
+                .setDesc('Source title (substring match) for Cast Hexagram lookups. Default: "Gnostic Book of Changes" (DeKorne / Michael Servetus — public-domain at jamesdekorne.com). Filtered by tradition = "iching".')
+                .addText(t => t
+                    .setPlaceholder('Gnostic Book of Changes')
+                    .setValue(this.plugin.settings.knowledge.hexagramSource)
+                    .onChange(async (v) => {
+                        this.plugin.settings.knowledge.hexagramSource = v.trim();
                         await this.plugin.saveSettings();
                     }));
 
