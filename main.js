@@ -2301,17 +2301,25 @@ var MoonSettingTab = class extends import_obsidian4.PluginSettingTab {
   /* ── General ── */
   renderGeneral(c) {
     const callout = c.createDiv({ cls: "moon-callout" });
-    const inner = callout.createDiv();
-    inner.createEl("strong", { text: "Required: a running Astrology Server" });
-    const p = callout.createEl("p");
-    p.innerHTML = 'Obsidian Moon is a thin client. All ephemeris + chart math happens on a small Node service \u2014 <a href="https://github.com/PoweredbyPugs/Astrology-Server" target="_blank">PoweredbyPugs/Astrology-Server</a>. Clone, <code>docker compose up -d --build</code>, then point the Server URL below at it.';
-    const calloutBtn = callout.createEl("a", {
-      text: "\u2197 Open Astrology Server on GitHub",
+    const greet = callout.createDiv({ cls: "moon-callout-greet" });
+    greet.createEl("strong", { text: "\u{1F319} Welcome to Obsidian Moon" });
+    const body = callout.createEl("p");
+    body.innerHTML = 'For the full picture \u2014 what commands exist, how the Oracle works, Templater snippets, the works \u2014 start with the <a href="https://github.com/PoweredbyPugs/moon-phase#readme" target="_blank">README</a>. Two things to know up front:';
+    const list = callout.createEl("ul", { cls: "moon-callout-list" });
+    const li1 = list.createEl("li");
+    li1.innerHTML = '<strong>You need an Astrology Server running somewhere.</strong> This plugin is a thin client \u2014 all the actual ephemeris math happens on a separate <a href="https://github.com/PoweredbyPugs/Astrology-Server" target="_blank">Node service</a>. Run <code>docker compose up -d --build</code> from that repo, then point the Server URL below at it. The same server also powers the Stella MCP, if you use that.';
+    const li2 = list.createEl("li");
+    li2.innerHTML = '<strong>The server needs Swiss Ephemeris data files</strong> in its <code>./ephemeris/</code> folder before it can compute anything. <code>docker compose up</code> sets up the container but does not download the data \u2014 grab the standard archive from <a href="https://www.astro.com/ftp/swisseph/ephe/" target="_blank">astro.com/ftp/swisseph/ephe/</a> (<code>se12000.zip</code> covers 1800\u20132400) and unzip the <code>.se1</code> files into <code>./ephemeris/</code> before starting the container.';
+    const btnRow = callout.createDiv({ cls: "moon-callout-btns" });
+    btnRow.createEl("a", {
+      text: "\u{1F4D6} Plugin README",
       cls: "moon-callout-btn",
-      attr: { href: "https://github.com/PoweredbyPugs/Astrology-Server", target: "_blank" }
+      attr: { href: "https://github.com/PoweredbyPugs/moon-phase#readme", target: "_blank" }
     });
-    calloutBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
+    btnRow.createEl("a", {
+      text: "\u2197 Astrology Server",
+      cls: "moon-callout-btn moon-callout-btn-secondary",
+      attr: { href: "https://github.com/PoweredbyPugs/Astrology-Server", target: "_blank" }
     });
     new import_obsidian4.Setting(c).setName("Server URL").setDesc("Where the Astrology Server is reachable (e.g. http://baratie:3000 on the tailnet, or http://localhost:3000 locally).").addText((text) => text.setPlaceholder("http://localhost:3000").setValue(this.plugin.settings.serverUrl).onChange(async (value) => {
       this.plugin.settings.serverUrl = normalizeBaseUrl(value);

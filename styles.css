@@ -295,33 +295,69 @@
   background: var(--background-secondary);
   border-left: 3px solid var(--interactive-accent);
   border-radius: 6px;
-  padding: 14px 16px;
-  margin: 0 0 18px;
+  padding: 14px 18px;
+  margin: 0 0 22px;
+}
+.moon-callout-greet {
+  font-size: 1.05em;
+  margin-bottom: 8px;
 }
 .moon-callout p {
-  margin: 6px 0 10px;
+  margin: 4px 0 10px;
   color: var(--text-muted);
   font-size: 0.9em;
-  line-height: 1.5;
+  line-height: 1.55;
 }
-.moon-callout p code {
+.moon-callout-list {
+  margin: 4px 0 12px;
+  padding-left: 20px;
+}
+.moon-callout-list li {
+  color: var(--text-muted);
+  font-size: 0.9em;
+  line-height: 1.55;
+  margin-bottom: 8px;
+}
+.moon-callout-list li strong {
+  color: var(--text-normal);
+}
+.moon-callout code {
   background: var(--background-primary);
   padding: 1px 5px;
   border-radius: 3px;
   font-size: 0.85em;
+  font-family: var(--font-monospace);
+}
+.moon-callout a {
+  color: var(--text-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.moon-callout-btns {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
 }
 .moon-callout-btn {
   display: inline-block;
-  padding: 5px 12px;
+  padding: 6px 14px;
   background: var(--interactive-accent);
-  color: var(--text-on-accent);
+  color: var(--text-on-accent) !important;
   border-radius: 4px;
-  text-decoration: none;
+  text-decoration: none !important;
   font-size: 0.85em;
   font-weight: 500;
 }
 .moon-callout-btn:hover {
   background: var(--interactive-accent-hover);
+}
+.moon-callout-btn-secondary {
+  background: var(--background-modifier-border);
+  color: var(--text-normal) !important;
+}
+.moon-callout-btn-secondary:hover {
+  background: var(--background-modifier-border-hover);
 }
 
 /* ── Commands tab: custom command cards ── */
