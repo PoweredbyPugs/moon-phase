@@ -386,12 +386,13 @@ export default class MoonPlugin extends Plugin {
         end.setMonth(end.getMonth() + this.settings.eclipseLookaheadMonths);
         const startIso = start.toISOString().slice(0, 10);
         const endIso = end.toISOString().slice(0, 10);
-        const data = await this.req<{ eclipses?: Array<{ date: string; type: string; sign?: string; degree?: string }> }>(
+        const data = await this.req<{ eclipses?: Array<{ date: string; time?: string; type: string; sign?: string; degreeInSign?: string }> }>(
             `/eclipses?start=${startIso}&end=${endIso}`);
         const first = data?.eclipses?.[0];
         if (!first) return `No eclipses in the next ${this.settings.eclipseLookaheadMonths} months.`;
-        const where = first.sign && first.degree ? ` at ${first.degree}˚ ${first.sign}` : '';
-        return `Next eclipse: ${first.type} on ${first.date}${where}.`;
+        const where = first.sign && first.degreeInSign ? ` at ${first.degreeInSign}˚ ${first.sign}` : '';
+        const when = first.time ? `${first.date} ${first.time}` : first.date;
+        return `Next eclipse: ${first.type} on ${when}${where}.`;
     }
 
     /** Helios: Vimshottari dasha periods for a saved chart. */

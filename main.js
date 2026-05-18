@@ -936,8 +936,9 @@ var MoonPlugin = class extends import_obsidian.Plugin {
     const first = (_a = data == null ? void 0 : data.eclipses) == null ? void 0 : _a[0];
     if (!first)
       return `No eclipses in the next ${this.settings.eclipseLookaheadMonths} months.`;
-    const where = first.sign && first.degree ? ` at ${first.degree}\u02DA ${first.sign}` : "";
-    return `Next eclipse: ${first.type} on ${first.date}${where}.`;
+    const where = first.sign && first.degreeInSign ? ` at ${first.degreeInSign}\u02DA ${first.sign}` : "";
+    const when = first.time ? `${first.date} ${first.time}` : first.date;
+    return `Next eclipse: ${first.type} on ${when}${where}.`;
   }
   /** Helios: Vimshottari dasha periods for a saved chart. */
   async getDashas(chartName, levels = 2) {
