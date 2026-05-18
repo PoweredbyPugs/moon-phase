@@ -177,24 +177,53 @@ export interface TechniqueSettings {
 
 export type DayHexagramMethod = 'plum-blossom' | 'ymd-hash';
 
-/* Oracle settings — currently I Ching only. Tarot will land here later. */
+/* A custom composite command — runs a list of built-in command ids in order
+ * and concatenates their text output. */
+export interface CustomCommandStep {
+    commandId: string;          // existing built-in id (e.g. "current-moon-degree")
+    chartOverride?: string;     // when set, this step runs against this saved-chart name instead of defaultChart
+}
+
+export interface CustomCommand {
+    id: string;                 // user-chosen slug (or auto-generated)
+    name: string;               // shown in command palette
+    separator: string;          // joined between step outputs; default "\n\n"
+    steps: CustomCommandStep[];
+}
+
+/* Oracle settings — currently I Ching only. Tarot will land here later.
+ * The I Ching interpretation source is hardcoded to DeKorne's Gnostic Book
+ * of Changes (HEXAGRAM_SOURCE constant below) — not user-configurable. */
+export const HEXAGRAM_SOURCE = 'Gnostic Book of Changes';
+
 export interface OracleSettings {
-    hexagramSource: string;          // source_title CONTAINS filter for DeKorne lookup
     journalFolder: string;           // vault folder for saved casts
     dayMethod: DayHexagramMethod;    // how "From the day" derives a hexagram
     autosaveCasts: boolean;          // when on, every modal cast is journaled
 }
 
-export type LLMProviderId = 'off' | 'openai' | 'anthropic' | 'ollama';
+export type LLMProviderId =
+    | 'off'
+    | 'openai'
+    | 'anthropic'
+    | 'openrouter'
+    | 'gemini'
+    | 'ollama'
+    | 'openclaw';
+
+export interface LLMProviderCreds {
+    apiKey: string;
+    baseUrl: string;
+    model: string;
+}
+
+/* Per-provider creds keyed by id, so switching providers doesn't wipe other
+ * providers' settings. Matches the periodic-ritual convention. */
+export type LLMProviderMap = Partial<Record<LLMProviderId, LLMProviderCreds>>;
 
 export interface LLMSettings {
     provider: LLMProviderId;
-    model: string;
-    openaiBaseUrl: string;
-    openaiApiKey: string;
-    anthropicBaseUrl: string;
-    anthropicApiKey: string;
-    ollamaBaseUrl: string;
+    providers: LLMProviderMap;
     maxTokens: number;
     temperature: number;
     memoryFolder: string;        // vault folder for saved readings
@@ -211,7 +240,6 @@ export interface KnowledgeSettings {
     neo4jPassword: string;
     neo4jIndexName: string;
     defaultResultLimit: number;
-    hexagramSource: string;      // i.e. "Gnostic Book of Changes" — used to scope hexagram lookups
 }
 
 export interface MoonPluginSettings {
@@ -237,6 +265,9 @@ export interface MoonPluginSettings {
     cycleInterval: 'hourly' | '6h' | 'daily' | 'weekly';
     cycleOrb: number;
     cycleLookaheadMonths: number;
+    // ── Commands ──
+    disabledCommands: string[];   // command ids that should NOT be registered
+    customCommands: CustomCommand[];
 }
 
 export const DEFAULT_SETTINGS: MoonPluginSettings = {
@@ -249,6 +280,8 @@ export const DEFAULT_SETTINGS: MoonPluginSettings = {
     cycleInterval: 'daily',
     cycleOrb: 1,
     cycleLookaheadMonths: 6,
+    disabledCommands: [],
+    customCommands: [],
     knowledge: {
         backend: 'off',
         neo4jHttpUri: 'http://localhost:7474',
@@ -257,22 +290,22 @@ export const DEFAULT_SETTINGS: MoonPluginSettings = {
         neo4jPassword: '',
         neo4jIndexName: 'interpretation_text',
         defaultResultLimit: 5,
-        hexagramSource: 'Gnostic Book of Changes',
     },
     oracle: {
-        hexagramSource: 'Gnostic Book of Changes',
         journalFolder: 'ObsidianMoon/oracle',
         dayMethod: 'plum-blossom',
         autosaveCasts: false,
     },
     llm: {
         provider: 'off',
-        model: 'claude-sonnet-4-6',
-        openaiBaseUrl: 'https://api.openai.com',
-        openaiApiKey: '',
-        anthropicBaseUrl: 'https://api.anthropic.com',
-        anthropicApiKey: '',
-        ollamaBaseUrl: 'http://localhost:11434',
+        providers: {
+            openai:     { apiKey: '', baseUrl: 'https://api.openai.com',                 model: 'gpt-4o-mini' },
+            anthropic:  { apiKey: '', baseUrl: 'https://api.anthropic.com',              model: 'claude-sonnet-4-6' },
+            openrouter: { apiKey: '', baseUrl: 'https://openrouter.ai/api',              model: 'anthropic/claude-sonnet-4.5' },
+            gemini:     { apiKey: '', baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-2.5-pro' },
+            ollama:     { apiKey: '', baseUrl: 'http://localhost:11434',                 model: 'llama3.1:8b' },
+            openclaw:   { apiKey: '', baseUrl: 'http://127.0.0.1:18789',                 model: 'openclaw/default' },
+        },
         maxTokens: 1500,
         temperature: 0.7,
         memoryFolder: 'ObsidianMoon/memory',

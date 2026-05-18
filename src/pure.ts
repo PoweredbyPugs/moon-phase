@@ -41,14 +41,14 @@ export function migrateSettings(raw: any): MoonPluginSettings {
             aspects: { ...DEFAULT_SETTINGS.aspects, ...(raw.aspects || {}) },
             techniques: { ...DEFAULT_SETTINGS.techniques, ...(raw.techniques || {}) },
             knowledge: { ...DEFAULT_SETTINGS.knowledge, ...(raw.knowledge || {}) },
-            llm: { ...DEFAULT_SETTINGS.llm, ...(raw.llm || {}) },
-            // v1.3.1 → v1.4: oracle settings extracted from knowledge.hexagramSource
+            llm: migrateLlmSettings(raw.llm),
+            // v1.4 → v1.5: hexagramSource is no longer configurable (hardcoded
+            // to the Gnostic Book of Changes via HEXAGRAM_SOURCE constant);
+            // the old raw.oracle.hexagramSource and raw.knowledge.hexagramSource
+            // fields are silently dropped during migration.
             oracle: {
                 ...DEFAULT_SETTINGS.oracle,
                 ...(raw.oracle || {}),
-                hexagramSource: raw.oracle?.hexagramSource
-                    ?? raw.knowledge?.hexagramSource
-                    ?? DEFAULT_SETTINGS.oracle.hexagramSource,
             },
         };
     }
@@ -81,6 +81,56 @@ export function migrateSettings(raw: any): MoonPluginSettings {
         serverUrl: typeof raw.serverUrl === 'string' ? raw.serverUrl : DEFAULT_SETTINGS.serverUrl,
         planets,
         aspects,
+    };
+}
+
+/* ── LLM settings migration: v1.4 flat fields → v1.5 per-provider map ── */
+
+function migrateLlmSettings(raw: any) {
+    const defaults = DEFAULT_SETTINGS.llm;
+    if (!raw || typeof raw !== 'object') return { ...defaults, providers: { ...defaults.providers } };
+
+    // Already v1.5: just merge providers map over defaults.
+    if (raw.providers && typeof raw.providers === 'object') {
+        const merged: any = { ...defaults.providers };
+        for (const [id, creds] of Object.entries(raw.providers)) {
+            merged[id] = { ...(defaults.providers as any)[id], ...(creds as any) };
+        }
+        return { ...defaults, ...raw, providers: merged };
+    }
+
+    // v1.4: flat openaiBaseUrl/openaiApiKey/anthropicBaseUrl/anthropicApiKey/ollamaBaseUrl/model fields
+    const model = raw.model || '';
+    const providers: any = { ...defaults.providers };
+    if (raw.openaiBaseUrl || raw.openaiApiKey) {
+        providers.openai = {
+            apiKey: raw.openaiApiKey || '',
+            baseUrl: raw.openaiBaseUrl || defaults.providers.openai!.baseUrl,
+            model: raw.provider === 'openai' ? model : defaults.providers.openai!.model,
+        };
+    }
+    if (raw.anthropicBaseUrl || raw.anthropicApiKey) {
+        providers.anthropic = {
+            apiKey: raw.anthropicApiKey || '',
+            baseUrl: raw.anthropicBaseUrl || defaults.providers.anthropic!.baseUrl,
+            model: raw.provider === 'anthropic' ? model : defaults.providers.anthropic!.model,
+        };
+    }
+    if (raw.ollamaBaseUrl) {
+        providers.ollama = {
+            apiKey: '',
+            baseUrl: raw.ollamaBaseUrl,
+            model: raw.provider === 'ollama' ? model : defaults.providers.ollama!.model,
+        };
+    }
+    return {
+        ...defaults,
+        provider: raw.provider || defaults.provider,
+        providers,
+        maxTokens: raw.maxTokens ?? defaults.maxTokens,
+        temperature: raw.temperature ?? defaults.temperature,
+        memoryFolder: raw.memoryFolder ?? defaults.memoryFolder,
+        knowledgeLimit: raw.knowledgeLimit ?? defaults.knowledgeLimit,
     };
 }
 

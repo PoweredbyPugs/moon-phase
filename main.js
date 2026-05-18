@@ -27,7 +27,7 @@ __export(main_exports, {
   default: () => MoonPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian5 = require("obsidian");
+var import_obsidian4 = require("obsidian");
 
 // src/types.ts
 var PLANETS = [
@@ -93,6 +93,7 @@ var MOON_PHASE_EMOJI = {
   "Last Quarter": "\u{1F317}",
   "Waning Crescent": "\u{1F318}"
 };
+var HEXAGRAM_SOURCE = "Gnostic Book of Changes";
 var DEFAULT_SETTINGS = {
   serverUrl: "http://localhost:3000",
   trackedCharts: [],
@@ -103,6 +104,8 @@ var DEFAULT_SETTINGS = {
   cycleInterval: "daily",
   cycleOrb: 1,
   cycleLookaheadMonths: 6,
+  disabledCommands: [],
+  customCommands: [],
   knowledge: {
     backend: "off",
     neo4jHttpUri: "http://localhost:7474",
@@ -110,23 +113,23 @@ var DEFAULT_SETTINGS = {
     neo4jUser: "neo4j",
     neo4jPassword: "",
     neo4jIndexName: "interpretation_text",
-    defaultResultLimit: 5,
-    hexagramSource: "Gnostic Book of Changes"
+    defaultResultLimit: 5
   },
   oracle: {
-    hexagramSource: "Gnostic Book of Changes",
     journalFolder: "ObsidianMoon/oracle",
     dayMethod: "plum-blossom",
     autosaveCasts: false
   },
   llm: {
     provider: "off",
-    model: "claude-sonnet-4-6",
-    openaiBaseUrl: "https://api.openai.com",
-    openaiApiKey: "",
-    anthropicBaseUrl: "https://api.anthropic.com",
-    anthropicApiKey: "",
-    ollamaBaseUrl: "http://localhost:11434",
+    providers: {
+      openai: { apiKey: "", baseUrl: "https://api.openai.com", model: "gpt-4o-mini" },
+      anthropic: { apiKey: "", baseUrl: "https://api.anthropic.com", model: "claude-sonnet-4-6" },
+      openrouter: { apiKey: "", baseUrl: "https://openrouter.ai/api", model: "anthropic/claude-sonnet-4.5" },
+      gemini: { apiKey: "", baseUrl: "https://generativelanguage.googleapis.com", model: "gemini-2.5-pro" },
+      ollama: { apiKey: "", baseUrl: "http://localhost:11434", model: "llama3.1:8b" },
+      openclaw: { apiKey: "", baseUrl: "http://127.0.0.1:18789", model: "openclaw/default" }
+    },
     maxTokens: 1500,
     temperature: 0.7,
     memoryFolder: "ObsidianMoon/memory",
@@ -178,7 +181,7 @@ function joinUrl(base, path) {
   return b + p;
 }
 function migrateSettings(raw) {
-  var _a, _b, _c, _d, _e, _f;
+  var _a, _b;
   if (!raw || typeof raw !== "object")
     return { ...DEFAULT_SETTINGS };
   const looksV2 = raw.planets || raw.aspects || raw.selectedChart !== void 0 || raw.defaultChart !== void 0;
@@ -196,12 +199,14 @@ function migrateSettings(raw) {
       aspects: { ...DEFAULT_SETTINGS.aspects, ...raw.aspects || {} },
       techniques: { ...DEFAULT_SETTINGS.techniques, ...raw.techniques || {} },
       knowledge: { ...DEFAULT_SETTINGS.knowledge, ...raw.knowledge || {} },
-      llm: { ...DEFAULT_SETTINGS.llm, ...raw.llm || {} },
-      // v1.3.1 → v1.4: oracle settings extracted from knowledge.hexagramSource
+      llm: migrateLlmSettings(raw.llm),
+      // v1.4 → v1.5: hexagramSource is no longer configurable (hardcoded
+      // to the Gnostic Book of Changes via HEXAGRAM_SOURCE constant);
+      // the old raw.oracle.hexagramSource and raw.knowledge.hexagramSource
+      // fields are silently dropped during migration.
       oracle: {
         ...DEFAULT_SETTINGS.oracle,
-        ...raw.oracle || {},
-        hexagramSource: (_f = (_e = (_c = raw.oracle) == null ? void 0 : _c.hexagramSource) != null ? _e : (_d = raw.knowledge) == null ? void 0 : _d.hexagramSource) != null ? _f : DEFAULT_SETTINGS.oracle.hexagramSource
+        ...raw.oracle || {}
       }
     };
   }
@@ -244,6 +249,51 @@ function migrateSettings(raw) {
     serverUrl: typeof raw.serverUrl === "string" ? raw.serverUrl : DEFAULT_SETTINGS.serverUrl,
     planets,
     aspects
+  };
+}
+function migrateLlmSettings(raw) {
+  var _a, _b, _c, _d;
+  const defaults = DEFAULT_SETTINGS.llm;
+  if (!raw || typeof raw !== "object")
+    return { ...defaults, providers: { ...defaults.providers } };
+  if (raw.providers && typeof raw.providers === "object") {
+    const merged = { ...defaults.providers };
+    for (const [id, creds] of Object.entries(raw.providers)) {
+      merged[id] = { ...defaults.providers[id], ...creds };
+    }
+    return { ...defaults, ...raw, providers: merged };
+  }
+  const model = raw.model || "";
+  const providers = { ...defaults.providers };
+  if (raw.openaiBaseUrl || raw.openaiApiKey) {
+    providers.openai = {
+      apiKey: raw.openaiApiKey || "",
+      baseUrl: raw.openaiBaseUrl || defaults.providers.openai.baseUrl,
+      model: raw.provider === "openai" ? model : defaults.providers.openai.model
+    };
+  }
+  if (raw.anthropicBaseUrl || raw.anthropicApiKey) {
+    providers.anthropic = {
+      apiKey: raw.anthropicApiKey || "",
+      baseUrl: raw.anthropicBaseUrl || defaults.providers.anthropic.baseUrl,
+      model: raw.provider === "anthropic" ? model : defaults.providers.anthropic.model
+    };
+  }
+  if (raw.ollamaBaseUrl) {
+    providers.ollama = {
+      apiKey: "",
+      baseUrl: raw.ollamaBaseUrl,
+      model: raw.provider === "ollama" ? model : defaults.providers.ollama.model
+    };
+  }
+  return {
+    ...defaults,
+    provider: raw.provider || defaults.provider,
+    providers,
+    maxTokens: (_a = raw.maxTokens) != null ? _a : defaults.maxTokens,
+    temperature: (_b = raw.temperature) != null ? _b : defaults.temperature,
+    memoryFolder: (_c = raw.memoryFolder) != null ? _c : defaults.memoryFolder,
+    knowledgeLimit: (_d = raw.knowledgeLimit) != null ? _d : defaults.knowledgeLimit
   };
 }
 function enabledPlanetNames(settings) {
@@ -1080,32 +1130,183 @@ var NullLLMProvider = class {
   }
 };
 
-// src/synthesis/providers/openai.ts
+// src/synthesis/registry.ts
 var import_obsidian2 = require("obsidian");
-var OpenAIProvider = class {
-  constructor(config) {
+function joinSystem(messages) {
+  const systems = messages.filter((m) => m.role === "system").map((m) => m.content).join("\n\n");
+  const rest = messages.filter((m) => m.role !== "system");
+  return { system: systems, user: rest };
+}
+function chatCompletionsBody(s, opts) {
+  var _a, _b;
+  return {
+    model: s.model || opts.model,
+    messages: opts.messages,
+    max_tokens: (_a = opts.maxTokens) != null ? _a : 1024,
+    temperature: (_b = opts.temperature) != null ? _b : 0.7
+  };
+}
+function extractOpenAIShape(json) {
+  var _a, _b, _c, _d;
+  return (_d = (_c = (_b = (_a = json == null ? void 0 : json.choices) == null ? void 0 : _a[0]) == null ? void 0 : _b.message) == null ? void 0 : _c.content) != null ? _d : "";
+}
+var PROVIDERS = {
+  openai: {
+    id: "openai",
+    label: "OpenAI",
+    needsKey: true,
+    defaultBaseUrl: "https://api.openai.com",
+    buildUrl: (s) => `${(s.baseUrl || "https://api.openai.com").replace(/\/+$/, "")}/v1/chat/completions`,
+    buildBody: chatCompletionsBody,
+    buildHeaders: (s) => ({
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${s.apiKey}`
+    }),
+    extractText: extractOpenAIShape
+  },
+  anthropic: {
+    id: "anthropic",
+    label: "Anthropic Claude",
+    needsKey: true,
+    defaultBaseUrl: "https://api.anthropic.com",
+    buildUrl: (s) => `${(s.baseUrl || "https://api.anthropic.com").replace(/\/+$/, "")}/v1/messages`,
+    buildBody: (s, opts) => {
+      var _a, _b;
+      const { system, user } = joinSystem(opts.messages);
+      const body = {
+        model: s.model || opts.model,
+        max_tokens: (_a = opts.maxTokens) != null ? _a : 1024,
+        temperature: (_b = opts.temperature) != null ? _b : 0.7,
+        messages: user
+      };
+      if (system)
+        body.system = system;
+      return body;
+    },
+    buildHeaders: (s) => ({
+      "Content-Type": "application/json",
+      "x-api-key": s.apiKey,
+      "anthropic-version": "2023-06-01"
+    }),
+    extractText: (json) => {
+      const blocks = json == null ? void 0 : json.content;
+      if (!Array.isArray(blocks))
+        return "";
+      return blocks.filter((b) => b.type === "text").map((b) => b.text).join("");
+    }
+  },
+  openrouter: {
+    id: "openrouter",
+    label: "OpenRouter",
+    needsKey: true,
+    defaultBaseUrl: "https://openrouter.ai/api",
+    buildUrl: (s) => `${(s.baseUrl || "https://openrouter.ai/api").replace(/\/+$/, "")}/v1/chat/completions`,
+    buildBody: chatCompletionsBody,
+    buildHeaders: (s) => ({
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${s.apiKey}`,
+      // Attribution headers per OpenRouter docs — optional but nice.
+      "HTTP-Referer": "https://github.com/PoweredbyPugs/moon-phase",
+      "X-Title": "Obsidian Moon"
+    }),
+    extractText: extractOpenAIShape
+  },
+  gemini: {
+    id: "gemini",
+    label: "Google Gemini",
+    needsKey: true,
+    defaultBaseUrl: "https://generativelanguage.googleapis.com",
+    buildUrl: (s, opts) => {
+      const base = (s.baseUrl || "https://generativelanguage.googleapis.com").replace(/\/+$/, "");
+      const model = s.model || opts.model;
+      return `${base}/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(s.apiKey)}`;
+    },
+    buildBody: (_s, opts) => {
+      var _a, _b;
+      const { system, user } = joinSystem(opts.messages);
+      const body = {
+        contents: user.map((m) => ({
+          role: m.role === "assistant" ? "model" : "user",
+          parts: [{ text: m.content }]
+        })),
+        generationConfig: {
+          maxOutputTokens: (_a = opts.maxTokens) != null ? _a : 1024,
+          temperature: (_b = opts.temperature) != null ? _b : 0.7
+        }
+      };
+      if (system)
+        body.system_instruction = { parts: [{ text: system }] };
+      return body;
+    },
+    buildHeaders: () => ({ "Content-Type": "application/json" }),
+    extractText: (json) => {
+      var _a, _b, _c;
+      const parts = (_c = (_b = (_a = json == null ? void 0 : json.candidates) == null ? void 0 : _a[0]) == null ? void 0 : _b.content) == null ? void 0 : _c.parts;
+      if (!Array.isArray(parts))
+        return "";
+      return parts.map((p) => {
+        var _a2;
+        return (_a2 = p.text) != null ? _a2 : "";
+      }).join("");
+    }
+  },
+  ollama: {
+    id: "ollama",
+    label: "Ollama (local)",
+    needsKey: false,
+    defaultBaseUrl: "http://localhost:11434",
+    buildUrl: (s) => `${(s.baseUrl || "http://localhost:11434").replace(/\/+$/, "")}/v1/chat/completions`,
+    buildBody: chatCompletionsBody,
+    buildHeaders: (s) => ({
+      "Content-Type": "application/json",
+      ...s.apiKey ? { "Authorization": `Bearer ${s.apiKey}` } : {}
+    }),
+    extractText: extractOpenAIShape
+  },
+  openclaw: {
+    id: "openclaw",
+    label: "OpenClaw (local agent gateway)",
+    needsKey: false,
+    // depends on gateway mode; we send the key when set
+    defaultBaseUrl: "http://127.0.0.1:18789",
+    buildUrl: (s) => `${(s.baseUrl || "http://127.0.0.1:18789").replace(/\/+$/, "")}/v1/chat/completions`,
+    buildBody: (s, opts) => {
+      var _a, _b;
+      return {
+        // OpenClaw routes to a specific agent via the `model` field.
+        // Common forms: "openclaw/default", "openclaw/main", "openclaw/<agentId>".
+        model: s.model || opts.model || "openclaw/default",
+        messages: opts.messages,
+        max_tokens: (_a = opts.maxTokens) != null ? _a : 1024,
+        temperature: (_b = opts.temperature) != null ? _b : 0.7
+      };
+    },
+    buildHeaders: (s) => ({
+      "Content-Type": "application/json",
+      ...s.apiKey ? { "Authorization": `Bearer ${s.apiKey}` } : {}
+    }),
+    extractText: extractOpenAIShape
+  }
+};
+var RegistryLLMProvider = class {
+  constructor(def, config) {
+    this.def = def;
     this.config = config;
-    this.name = "openai";
+    this.name = def.id;
   }
   isConfigured() {
-    return !!(this.config.baseUrl && (this.config.apiKey || /localhost|127\.0\.0\.1|ollama/i.test(this.config.baseUrl)));
+    if (this.def.needsKey && !this.config.apiKey)
+      return false;
+    return !!this.config.model;
   }
   async complete(opts) {
-    var _a, _b, _c, _d, _e, _f, _g;
+    var _a, _b;
     if (!this.isConfigured()) {
-      throw new Error("OpenAI provider not configured (baseUrl + apiKey required).");
+      throw new Error(`${this.def.label} not configured: missing ${this.def.needsKey ? "API key or " : ""}model`);
     }
-    const path = this.config.chatPath || "/v1/chat/completions";
-    const url = this.config.baseUrl.replace(/\/+$/, "") + path;
-    const headers = { "Content-Type": "application/json" };
-    if (this.config.apiKey)
-      headers["Authorization"] = `Bearer ${this.config.apiKey}`;
-    const body = {
-      model: opts.model,
-      messages: opts.messages,
-      max_tokens: (_a = opts.maxTokens) != null ? _a : 1024,
-      temperature: (_b = opts.temperature) != null ? _b : 0.7
-    };
+    const url = this.def.buildUrl(this.config, opts);
+    const body = this.def.buildBody(this.config, opts);
+    const headers = this.def.buildHeaders(this.config);
     const res = await (0, import_obsidian2.requestUrl)({
       url,
       method: "POST",
@@ -1115,62 +1316,9 @@ var OpenAIProvider = class {
       throw: false
     });
     if (res.status < 200 || res.status >= 300) {
-      throw new Error(`LLM ${res.status} from ${url}: ${((_c = res.text) != null ? _c : "").slice(0, 200)}`);
+      throw new Error(`${this.def.label} ${res.status}: ${((_a = res.text) != null ? _a : "").slice(0, 300)}`);
     }
-    const choice = (_g = (_f = (_e = (_d = res.json) == null ? void 0 : _d.choices) == null ? void 0 : _e[0]) == null ? void 0 : _f.message) == null ? void 0 : _g.content;
-    if (typeof choice !== "string") {
-      throw new Error("LLM response missing choices[0].message.content");
-    }
-    return choice;
-  }
-};
-
-// src/synthesis/providers/anthropic.ts
-var import_obsidian3 = require("obsidian");
-var AnthropicProvider = class {
-  constructor(config) {
-    this.config = config;
-    this.name = "anthropic";
-  }
-  isConfigured() {
-    return !!(this.config.baseUrl && this.config.apiKey);
-  }
-  async complete(opts) {
-    var _a, _b, _c, _d, _e;
-    if (!this.isConfigured()) {
-      throw new Error("Anthropic provider not configured (baseUrl + apiKey required).");
-    }
-    const url = this.config.baseUrl.replace(/\/+$/, "") + "/v1/messages";
-    const systemMsgs = opts.messages.filter((m) => m.role === "system").map((m) => m.content);
-    const chatMsgs = opts.messages.filter((m) => m.role !== "system").map((m) => ({ role: m.role, content: m.content }));
-    const body = {
-      model: opts.model,
-      max_tokens: (_a = opts.maxTokens) != null ? _a : 1024,
-      temperature: (_b = opts.temperature) != null ? _b : 0.7,
-      messages: chatMsgs
-    };
-    if (systemMsgs.length > 0)
-      body.system = systemMsgs.join("\n\n");
-    const res = await (0, import_obsidian3.requestUrl)({
-      url,
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": this.config.apiKey,
-        "anthropic-version": (_c = this.config.apiVersion) != null ? _c : "2023-06-01"
-      },
-      contentType: "application/json",
-      body: JSON.stringify(body),
-      throw: false
-    });
-    if (res.status < 200 || res.status >= 300) {
-      throw new Error(`Anthropic ${res.status} from ${url}: ${((_d = res.text) != null ? _d : "").slice(0, 200)}`);
-    }
-    const blocks = (_e = res.json) == null ? void 0 : _e.content;
-    if (!Array.isArray(blocks))
-      throw new Error("Anthropic response missing content[]");
-    const text = blocks.filter((b) => b.type === "text" && typeof b.text === "string").map((b) => b.text).join("");
-    return text;
+    return (_b = this.def.extractText(res.json)) != null ? _b : "";
   }
 };
 
@@ -1318,21 +1466,21 @@ async function synthesizePlacement(deps, placementText) {
 }
 
 // src/synthesis/memory.ts
-var import_obsidian4 = require("obsidian");
+var import_obsidian3 = require("obsidian");
 async function saveMemoryRecord(app, folder, record) {
-  const dir = (0, import_obsidian4.normalizePath)(folder);
+  const dir = (0, import_obsidian3.normalizePath)(folder);
   let existing = app.vault.getAbstractFileByPath(dir);
   if (!existing) {
     await app.vault.createFolder(dir);
     existing = app.vault.getAbstractFileByPath(dir);
   }
-  if (!(existing instanceof import_obsidian4.TFolder)) {
+  if (!(existing instanceof import_obsidian3.TFolder)) {
     throw new Error(`Memory path "${dir}" exists and is not a folder.`);
   }
   const ts = record.timestamp.replace(/[:.]/g, "-");
   const slug = record.placement ? slugify(record.placement) : `${record.kind}`;
   const filename = `${record.chart || "general"}-${ts}-${slug}.md`.replace(/-+/g, "-");
-  const filepath = (0, import_obsidian4.normalizePath)(`${dir}/${filename}`);
+  const filepath = (0, import_obsidian3.normalizePath)(`${dir}/${filename}`);
   const frontmatter = [
     "---",
     `obsidianmoon-memory: true`,
@@ -1355,11 +1503,12 @@ function slugify(s) {
 }
 
 // main.ts
-var MoonPlugin = class extends import_obsidian5.Plugin {
+var MoonPlugin = class extends import_obsidian4.Plugin {
   constructor() {
     super(...arguments);
     this.knowledge = new NullKnowledgeBackend();
     this.llm = new NullLLMProvider();
+    this.commandRegistry = [];
     this.api = {
       getMoonData: this.getMoonData.bind(this),
       getMoonPhaseEmoji: moonPhaseEmoji,
@@ -1398,66 +1547,63 @@ var MoonPlugin = class extends import_obsidian5.Plugin {
     this.addSettingTab(new MoonSettingTab(this.app, this));
     window.ObsidianMoon = this.api;
     window.MoonPhasePlugin = this.api;
-    this.addCommand({
-      id: "current-moon-phase",
-      name: "Current Moon Phase",
-      editorCallback: (editor) => {
+    this.addToggleable(
+      "current-moon-phase",
+      "Current Moon Phase",
+      "Moon",
+      (editor) => {
         this.getCurrentMoonPhase().then((s) => editor.replaceSelection(s));
       }
-    });
-    this.addCommand({
-      id: "current-moon-degree",
-      name: "Current Moon Degree",
-      editorCallback: (editor) => {
+    );
+    this.addToggleable(
+      "current-moon-degree",
+      "Current Moon Degree",
+      "Moon",
+      (editor) => {
         this.getCurrentMoonDegree().then((s) => editor.replaceSelection(s));
       }
-    });
-    this.addCommand({
-      id: "weekly-phase",
-      name: "Weekly Phase",
-      editorCallback: (editor) => {
+    );
+    this.addToggleable(
+      "weekly-phase",
+      "Weekly Phase",
+      "Moon",
+      (editor) => {
         this.getWeeklyPhase().then((s) => editor.replaceSelection(s));
       }
-    });
-    this.addCommand({
-      id: "planetary-positions",
-      name: "All Planetary Positions",
-      editorCallback: (editor) => {
-        this.getPlanetaryData().then((data) => {
-          editor.replaceSelection(data.planets.map(formatPlanetLine).join("\n"));
-        }).catch((err) => this.handleError(editor, "planetary data", err));
-      }
+    );
+    this.addToggleable("planetary-positions", "All Planetary Positions", "Planets", (editor) => {
+      this.getPlanetaryData().then((data) => {
+        editor.replaceSelection(data.planets.map(formatPlanetLine).join("\n"));
+      }).catch((err) => this.handleError(editor, "planetary data", err));
     });
     for (const planetName of PLANETS) {
-      this.addCommand({
-        id: `${planetName.toLowerCase()}-position`,
-        name: `${planetName} Position`,
-        editorCallback: (editor) => {
+      this.addToggleable(
+        `${planetName.toLowerCase()}-position`,
+        `${planetName} Position`,
+        "Planets",
+        (editor) => {
           this.getPlanetaryData().then((data) => {
             const planet = data.planets.find((p) => p.name === planetName);
             editor.replaceSelection(planet ? formatPlanetLine(planet) : `Error: ${planetName} data not found`);
           }).catch((err) => this.handleError(editor, `${planetName} data`, err));
         }
-      });
+      );
     }
-    this.addCommand({
-      id: "all-aspects",
-      name: "All Current Aspects",
-      editorCallback: (editor) => {
-        this.getEffectiveAspects().then((aspects) => {
-          if (aspects.length === 0) {
-            editor.replaceSelection("No significant aspects currently.");
-            return;
-          }
-          editor.replaceSelection(aspects.map(formatSkyAspectLine).join("\n"));
-        }).catch((err) => this.handleError(editor, "aspects data", err));
-      }
+    this.addToggleable("all-aspects", "All Current Aspects", "Aspects", (editor) => {
+      this.getEffectiveAspects().then((aspects) => {
+        if (aspects.length === 0) {
+          editor.replaceSelection("No significant aspects currently.");
+          return;
+        }
+        editor.replaceSelection(aspects.map(formatSkyAspectLine).join("\n"));
+      }).catch((err) => this.handleError(editor, "aspects data", err));
     });
     for (const planetName of PLANETS) {
-      this.addCommand({
-        id: `${planetName.toLowerCase()}-aspects`,
-        name: `${planetName} Aspects`,
-        editorCallback: (editor) => {
+      this.addToggleable(
+        `${planetName.toLowerCase()}-aspects`,
+        `${planetName} Aspects`,
+        "Aspects",
+        (editor) => {
           this.getEffectiveAspects().then((aspects) => {
             const relevant = aspects.filter((a) => a.planet1 === planetName || a.planet2 === planetName);
             if (relevant.length === 0) {
@@ -1480,13 +1626,14 @@ var MoonPlugin = class extends import_obsidian5.Plugin {
             editor.replaceSelection(out);
           }).catch((err) => this.handleError(editor, `${planetName} aspects`, err));
         }
-      });
+      );
     }
     for (const aspectName of ["Conjunction", "Opposition", "Trine", "Square", "Sextile"]) {
-      this.addCommand({
-        id: `${aspectName.toLowerCase()}-aspects`,
-        name: `${aspectName} Aspects`,
-        editorCallback: (editor) => {
+      this.addToggleable(
+        `${aspectName.toLowerCase()}-aspects`,
+        `${aspectName} Aspects`,
+        "Aspects",
+        (editor) => {
           this.getEffectiveAspects().then((aspects) => {
             const relevant = aspects.filter((a) => a.aspectName === aspectName);
             if (relevant.length === 0) {
@@ -1496,175 +1643,120 @@ var MoonPlugin = class extends import_obsidian5.Plugin {
             editor.replaceSelection(relevant.map(formatSkyAspectLine).join("\n"));
           }).catch((err) => this.handleError(editor, `${aspectName} aspects`, err));
         }
-      });
+      );
     }
-    this.addCommand({
-      id: "cast-hexagram",
-      name: "Cast Hexagram (insert at cursor)",
-      editorCallback: (editor) => {
-        if (!this.settings.techniques.hexagram) {
-          new import_obsidian5.Notice('Enable "Hexagram" in the Techniques settings tab first.');
-          return;
-        }
-        this.getDailyHexagram().then((text) => editor.replaceSelection(text)).catch((err) => this.handleError(editor, "hexagram", err));
+    this.addToggleable("cast-hexagram", "Cast Hexagram (insert at cursor)", "Oracle", (editor) => {
+      if (!this.settings.techniques.hexagram) {
+        new import_obsidian4.Notice('Enable "Hexagram" in the Techniques settings tab first.');
+        return;
       }
+      this.getDailyHexagram().then((text) => editor.replaceSelection(text)).catch((err) => this.handleError(editor, "hexagram", err));
     });
-    this.addCommand({
-      id: "open-hexagram-modal",
-      name: "Hexagram Oracle (modal \u2014 cast / manual / day)",
-      editorCallback: (editor) => {
-        if (!this.settings.techniques.hexagram) {
-          new import_obsidian5.Notice('Enable "Hexagram" in the Techniques settings tab first.');
-          return;
-        }
-        new HexagramModal(this.app, this, editor).open();
+    this.addToggleable("open-hexagram-modal", "Hexagram Oracle (modal \u2014 cast / manual / day)", "Oracle", (editor) => {
+      if (!this.settings.techniques.hexagram) {
+        new import_obsidian4.Notice('Enable "Hexagram" in the Techniques settings tab first.');
+        return;
       }
+      new HexagramModal(this.app, this, editor).open();
     });
-    this.addCommand({
-      id: "todays-ki",
-      name: "Today's 9 Star Ki",
-      editorCallback: (editor) => {
-        if (!this.settings.techniques.ki) {
-          new import_obsidian5.Notice('Enable "Ki" in the Techniques settings tab first.');
-          return;
-        }
-        editor.replaceSelection(this.getTodaysKi());
+    this.addToggleable("todays-ki", "Today's 9 Star Ki", "Techniques", (editor) => {
+      if (!this.settings.techniques.ki) {
+        new import_obsidian4.Notice('Enable "Ki" in the Techniques settings tab first.');
+        return;
       }
+      editor.replaceSelection(this.getTodaysKi());
     });
-    this.addCommand({
-      id: "natal-ki",
-      name: "Natal 9 Star Ki (selected chart / birth date)",
-      editorCallback: (editor) => {
-        if (!this.settings.techniques.ki) {
-          new import_obsidian5.Notice('Enable "Ki" in the Techniques settings tab first.');
-          return;
-        }
-        this.getNatalKi().then((text) => editor.replaceSelection(text)).catch((err) => this.handleError(editor, "natal Ki", err));
+    this.addToggleable("natal-ki", "Natal 9 Star Ki (selected chart / birth date)", "Techniques", (editor) => {
+      if (!this.settings.techniques.ki) {
+        new import_obsidian4.Notice('Enable "Ki" in the Techniques settings tab first.');
+        return;
       }
+      this.getNatalKi().then((text) => editor.replaceSelection(text)).catch((err) => this.handleError(editor, "natal Ki", err));
     });
-    this.addCommand({
-      id: "midpoint-transits",
-      name: "Midpoint Transits (selected chart)",
-      editorCallback: (editor) => {
-        if (!this.settings.techniques.midpoints) {
-          new import_obsidian5.Notice('Enable "Midpoints" in the Techniques settings tab first.');
-          return;
-        }
-        this.getMidpointTransits().then((text) => editor.replaceSelection(text)).catch((err) => this.handleError(editor, "midpoint transits", err));
+    this.addToggleable("midpoint-transits", "Midpoint Transits (selected chart)", "Techniques", (editor) => {
+      if (!this.settings.techniques.midpoints) {
+        new import_obsidian4.Notice('Enable "Midpoints" in the Techniques settings tab first.');
+        return;
       }
+      this.getMidpointTransits().then((text) => editor.replaceSelection(text)).catch((err) => this.handleError(editor, "midpoint transits", err));
     });
-    this.addCommand({
-      id: "next-eclipse",
-      name: "Next Eclipse",
-      editorCallback: (editor) => {
-        if (!this.settings.techniques.eclipses) {
-          new import_obsidian5.Notice('Enable "Eclipses" in the Techniques settings tab first.');
-          return;
-        }
-        this.getNextEclipse().then((text) => editor.replaceSelection(text)).catch((err) => this.handleError(editor, "next eclipse", err));
+    this.addToggleable("next-eclipse", "Next Eclipse", "Techniques", (editor) => {
+      if (!this.settings.techniques.eclipses) {
+        new import_obsidian4.Notice('Enable "Eclipses" in the Techniques settings tab first.');
+        return;
       }
+      this.getNextEclipse().then((text) => editor.replaceSelection(text)).catch((err) => this.handleError(editor, "next eclipse", err));
     });
-    this.addCommand({
-      id: "dashas",
-      name: "Vimshottari Dashas (selected chart)",
-      editorCallback: (editor) => {
-        if (!this.settings.techniques.dashas) {
-          new import_obsidian5.Notice('Enable "Dashas" in the Techniques settings tab first.');
-          return;
-        }
-        this.getDashas().then((text) => editor.replaceSelection(text)).catch((err) => this.handleError(editor, "dashas", err));
+    this.addToggleable("dashas", "Vimshottari Dashas (selected chart)", "Techniques", (editor) => {
+      if (!this.settings.techniques.dashas) {
+        new import_obsidian4.Notice('Enable "Dashas" in the Techniques settings tab first.');
+        return;
       }
+      this.getDashas().then((text) => editor.replaceSelection(text)).catch((err) => this.handleError(editor, "dashas", err));
     });
-    this.addCommand({
-      id: "plot-cycle",
-      name: "Plot Planetary Cycle (modal)",
-      editorCallback: (editor) => {
-        new CycleModal(this.app, this, editor).open();
+    this.addToggleable("plot-cycle", "Plot Planetary Cycle (modal)", "Cycles", (editor) => {
+      new CycleModal(this.app, this, editor).open();
+    });
+    this.addToggleable("knowledge-search", "Knowledge Search", "Knowledge", (editor) => {
+      if (!this.knowledge.isConfigured()) {
+        new import_obsidian4.Notice("Configure a knowledge backend in settings first.");
+        return;
       }
+      new KnowledgeSearchModal(this.app, this, editor).open();
     });
-    this.addCommand({
-      id: "knowledge-search",
-      name: "Knowledge Search",
-      editorCallback: (editor) => {
-        if (!this.knowledge.isConfigured()) {
-          new import_obsidian5.Notice("Configure a knowledge backend in settings first.");
-          return;
-        }
-        new KnowledgeSearchModal(this.app, this, editor).open();
+    this.addToggleable("interpret-selection", "Interpret Selected Placement (knowledge only)", "Knowledge", (editor) => {
+      const selection = editor.getSelection().trim() || editor.getLine(editor.getCursor().line).trim();
+      if (!selection) {
+        new import_obsidian4.Notice('Select a placement first (e.g. "Mars Capricorn 15\u02DA" or "\u2642 \u2651").');
+        return;
       }
+      this.interpretPlacement(selection).then((text) => editor.replaceSelection(text)).catch((err) => this.handleError(editor, "interpretation", err));
     });
-    this.addCommand({
-      id: "interpret-selection",
-      name: "Interpret Selected Placement (knowledge only)",
-      editorCallback: (editor) => {
-        const selection = editor.getSelection().trim() || editor.getLine(editor.getCursor().line).trim();
-        if (!selection) {
-          new import_obsidian5.Notice('Select a placement first (e.g. "Mars Capricorn 15\u02DA" or "\u2642 \u2651").');
-          return;
-        }
-        this.interpretPlacement(selection).then((text) => editor.replaceSelection(text)).catch((err) => this.handleError(editor, "interpretation", err));
+    this.addToggleable("chart-reading", "Insert Chart Reading (LLM)", "Synthesis", (editor) => {
+      if (!this.settings.defaultChart) {
+        new import_obsidian4.Notice("Pick a default chart in Natal Chart settings first.");
+        return;
       }
-    });
-    this.addCommand({
-      id: "chart-reading",
-      name: "Insert Chart Reading (LLM)",
-      editorCallback: (editor) => {
-        if (!this.settings.defaultChart) {
-          new import_obsidian5.Notice("Pick a default chart in Natal Chart settings first.");
-          return;
-        }
-        if (!this.llm.isConfigured()) {
-          new import_obsidian5.Notice("Configure an LLM provider in the LLM settings tab first.");
-          return;
-        }
-        const file = this.app.workspace.getActiveFile();
-        this.chartReading(this.settings.defaultChart, file == null ? void 0 : file.path).then((text) => editor.replaceSelection(text)).catch((err) => this.handleError(editor, "chart reading", err));
+      if (!this.llm.isConfigured()) {
+        new import_obsidian4.Notice("Configure an LLM provider in the LLM settings tab first.");
+        return;
       }
+      const file = this.app.workspace.getActiveFile();
+      this.chartReading(this.settings.defaultChart, file == null ? void 0 : file.path).then((text) => editor.replaceSelection(text)).catch((err) => this.handleError(editor, "chart reading", err));
     });
-    this.addCommand({
-      id: "discover-patterns",
-      name: "Discover Patterns for Default Chart (LLM)",
-      editorCallback: (editor) => {
-        if (!this.settings.defaultChart) {
-          new import_obsidian5.Notice("Pick a default chart in Natal Chart settings first.");
-          return;
-        }
-        if (!this.llm.isConfigured()) {
-          new import_obsidian5.Notice("Configure an LLM provider in the LLM settings tab first.");
-          return;
-        }
-        const file = this.app.workspace.getActiveFile();
-        this.discoverPatterns(this.settings.defaultChart, file == null ? void 0 : file.path).then((text) => editor.replaceSelection(text)).catch((err) => this.handleError(editor, "discover", err));
+    this.addToggleable("discover-patterns", "Discover Patterns for Default Chart (LLM)", "Synthesis", (editor) => {
+      if (!this.settings.defaultChart) {
+        new import_obsidian4.Notice("Pick a default chart in Natal Chart settings first.");
+        return;
       }
-    });
-    this.addCommand({
-      id: "interpret-selection-llm",
-      name: "Interpret Selected Placement (LLM + knowledge)",
-      editorCallback: (editor) => {
-        const selection = editor.getSelection().trim() || editor.getLine(editor.getCursor().line).trim();
-        if (!selection) {
-          new import_obsidian5.Notice("Select a placement first.");
-          return;
-        }
-        if (!this.llm.isConfigured()) {
-          new import_obsidian5.Notice("Configure an LLM provider in the LLM settings tab first.");
-          return;
-        }
-        const file = this.app.workspace.getActiveFile();
-        this.interpretPlacementLLM(selection, file == null ? void 0 : file.path).then((text) => editor.replaceSelection(text)).catch((err) => this.handleError(editor, "LLM interpretation", err));
+      if (!this.llm.isConfigured()) {
+        new import_obsidian4.Notice("Configure an LLM provider in the LLM settings tab first.");
+        return;
       }
+      const file = this.app.workspace.getActiveFile();
+      this.discoverPatterns(this.settings.defaultChart, file == null ? void 0 : file.path).then((text) => editor.replaceSelection(text)).catch((err) => this.handleError(editor, "discover", err));
     });
-    this.addCommand({
-      id: "cycle-crossings-default",
-      name: "Cycle Crossings to Default Chart (next 6 months)",
-      editorCallback: (editor) => {
-        if (!this.settings.defaultChart) {
-          new import_obsidian5.Notice("Pick a default chart in Natal Chart settings first.");
-          return;
-        }
-        new CycleModal(this.app, this, editor, { quickCrossings: true }).open();
+    this.addToggleable("interpret-selection-llm", "Interpret Selected Placement (LLM + knowledge)", "Synthesis", (editor) => {
+      const selection = editor.getSelection().trim() || editor.getLine(editor.getCursor().line).trim();
+      if (!selection) {
+        new import_obsidian4.Notice("Select a placement first.");
+        return;
       }
+      if (!this.llm.isConfigured()) {
+        new import_obsidian4.Notice("Configure an LLM provider in the LLM settings tab first.");
+        return;
+      }
+      const file = this.app.workspace.getActiveFile();
+      this.interpretPlacementLLM(selection, file == null ? void 0 : file.path).then((text) => editor.replaceSelection(text)).catch((err) => this.handleError(editor, "LLM interpretation", err));
     });
+    this.addToggleable("cycle-crossings-default", "Cycle Crossings to Default Chart (next 6 months)", "Cycles", (editor) => {
+      if (!this.settings.defaultChart) {
+        new import_obsidian4.Notice("Pick a default chart in Natal Chart settings first.");
+        return;
+      }
+      new CycleModal(this.app, this, editor, { quickCrossings: true }).open();
+    });
+    this.registerCustomCommands();
   }
   onunload() {
     try {
@@ -1677,19 +1769,72 @@ var MoonPlugin = class extends import_obsidian5.Plugin {
   }
   /** Rebuild the LLM provider from current settings. */
   rebuildLLMProvider() {
+    var _a;
     const ls = this.settings.llm;
-    switch (ls.provider) {
-      case "openai":
-        this.llm = new OpenAIProvider({ baseUrl: ls.openaiBaseUrl, apiKey: ls.openaiApiKey });
-        break;
-      case "ollama":
-        this.llm = new OpenAIProvider({ baseUrl: ls.ollamaBaseUrl, apiKey: "" });
-        break;
-      case "anthropic":
-        this.llm = new AnthropicProvider({ baseUrl: ls.anthropicBaseUrl, apiKey: ls.anthropicApiKey });
-        break;
-      default:
-        this.llm = new NullLLMProvider();
+    if (ls.provider === "off") {
+      this.llm = new NullLLMProvider();
+      return;
+    }
+    const def = PROVIDERS[ls.provider];
+    const creds = (_a = ls.providers[ls.provider]) != null ? _a : { apiKey: "", baseUrl: def.defaultBaseUrl, model: "" };
+    this.llm = new RegistryLLMProvider(def, creds);
+  }
+  /** Register a built-in command via this helper instead of `this.addCommand`
+   * directly. Tracks the command in `commandRegistry` so the Commands tab
+   * can list it; respects `settings.disabledCommands` to skip registration
+   * for ones the user has turned off (takes effect on next reload). */
+  addToggleable(id, name, group, editorCallback) {
+    const disabled = this.settings.disabledCommands.includes(id);
+    this.commandRegistry.push({
+      id,
+      name,
+      group,
+      registered: !disabled,
+      runner: (editor) => {
+        editorCallback(editor);
+        return "";
+      }
+    });
+    if (disabled)
+      return;
+    this.addCommand({ id, name, editorCallback });
+  }
+  /** Register all user-defined custom commands at load time.
+   * A custom command runs its steps in sequence via the standard Obsidian
+   * command dispatch — each step inserts its own text at the cursor.
+   * Optional chartOverride temporarily swaps `settings.defaultChart` for
+   * the duration of the step. */
+  registerCustomCommands() {
+    for (const cmd of this.settings.customCommands) {
+      const id = `custom-${cmd.id}`;
+      this.addCommand({
+        id,
+        name: `${cmd.name} (custom)`,
+        editorCallback: async (editor) => {
+          const savedDefault = this.settings.defaultChart;
+          try {
+            for (const step of cmd.steps) {
+              if (step.chartOverride)
+                this.settings.defaultChart = step.chartOverride;
+              else
+                this.settings.defaultChart = savedDefault;
+              const entry = this.commandRegistry.find((c) => c.id === step.commandId);
+              if (!entry || !entry.registered) {
+                editor.replaceSelection(`_(skipped: ${step.commandId} not available)_
+
+`);
+                continue;
+              }
+              await Promise.resolve(entry.runner(editor));
+              const sep = cmd.separator || "\n\n";
+              if (sep)
+                editor.replaceSelection(sep);
+            }
+          } finally {
+            this.settings.defaultChart = savedDefault;
+          }
+        }
+      });
     }
   }
   /** Rebuild the knowledge backend from current settings. Called after
@@ -1724,7 +1869,7 @@ var MoonPlugin = class extends import_obsidian5.Plugin {
   async req(path, opts) {
     var _a, _b;
     const url = joinUrl(this.settings.serverUrl, path);
-    const res = await (0, import_obsidian5.requestUrl)({
+    const res = await (0, import_obsidian4.requestUrl)({
       url,
       method: (_a = opts == null ? void 0 : opts.method) != null ? _a : "GET",
       contentType: (opts == null ? void 0 : opts.body) ? "application/json" : void 0,
@@ -1811,11 +1956,11 @@ var MoonPlugin = class extends import_obsidian5.Plugin {
   async getDailyHexagram() {
     const cast = castHexagram();
     const base = formatCast(cast);
-    if (!this.knowledge.isConfigured() || !this.settings.oracle.hexagramSource) {
+    if (!this.knowledge.isConfigured() || !HEXAGRAM_SOURCE) {
       return base;
     }
     try {
-      const sourceTitle = this.settings.oracle.hexagramSource;
+      const sourceTitle = HEXAGRAM_SOURCE;
       const primary = await this.lookupHexagramText(cast.primary.number, cast.primary.name, sourceTitle);
       const relating = cast.relating ? await this.lookupHexagramText(cast.relating.number, cast.relating.name, sourceTitle) : null;
       const sections = [base];
@@ -1841,7 +1986,7 @@ var MoonPlugin = class extends import_obsidian5.Plugin {
     if (!this.knowledge.isConfigured())
       return "";
     const info = getHexagram(number);
-    const sourceTitle = this.settings.oracle.hexagramSource;
+    const sourceTitle = HEXAGRAM_SOURCE;
     const chunks = await this.knowledge.search({
       query: hexagramLineQuery(number, info.name, line),
       tradition: "iching",
@@ -1938,10 +2083,12 @@ ${formatChunks(chunks, text).split("\n").slice(1).join("\n")}`;
   }
   /* ── Synthesis (LLM + knowledge) ── */
   synthDeps() {
+    var _a;
+    const creds = this.settings.llm.providers[this.settings.llm.provider];
     return {
       knowledge: this.knowledge,
       llm: this.llm,
-      model: this.settings.llm.model,
+      model: (_a = creds == null ? void 0 : creds.model) != null ? _a : "",
       maxTokens: this.settings.llm.maxTokens,
       temperature: this.settings.llm.temperature,
       knowledgeLimit: this.settings.llm.knowledgeLimit
@@ -2077,7 +2224,7 @@ ${formatChunks(chunks, text).split("\n").slice(1).join("\n")}`;
     editor.replaceSelection(`Error fetching ${what}. Check console for details.`);
   }
 };
-var MoonSettingTab = class extends import_obsidian5.PluginSettingTab {
+var MoonSettingTab = class extends import_obsidian4.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.activeTab = "general";
@@ -2106,7 +2253,8 @@ var MoonSettingTab = class extends import_obsidian5.PluginSettingTab {
       { id: "techniques", label: "Techniques" },
       { id: "oracle", label: "Oracle" },
       { id: "knowledge", label: "Knowledge" },
-      { id: "llm", label: "LLM" }
+      { id: "llm", label: "LLM" },
+      { id: "commands", label: "Commands" }
     ];
     const bar = containerEl.createDiv({ cls: "moon-tab-bar" });
     for (const t of tabs) {
@@ -2145,30 +2293,46 @@ var MoonSettingTab = class extends import_obsidian5.PluginSettingTab {
       case "llm":
         this.renderLLM(body);
         break;
+      case "commands":
+        this.renderCommands(body);
+        break;
     }
   }
   /* ── General ── */
   renderGeneral(c) {
-    new import_obsidian5.Setting(c).setName("Server URL").setDesc("URL to your Sweph Astrological API server (e.g. http://baratie:3000).").addText((text) => text.setPlaceholder("http://localhost:3000").setValue(this.plugin.settings.serverUrl).onChange(async (value) => {
+    const callout = c.createDiv({ cls: "moon-callout" });
+    const inner = callout.createDiv();
+    inner.createEl("strong", { text: "Required: a running Astrology Server" });
+    const p = callout.createEl("p");
+    p.innerHTML = 'Obsidian Moon is a thin client. All ephemeris + chart math happens on a small Node service \u2014 <a href="https://github.com/PoweredbyPugs/Astrology-Server" target="_blank">PoweredbyPugs/Astrology-Server</a>. Clone, <code>docker compose up -d --build</code>, then point the Server URL below at it.';
+    const calloutBtn = callout.createEl("a", {
+      text: "\u2197 Open Astrology Server on GitHub",
+      cls: "moon-callout-btn",
+      attr: { href: "https://github.com/PoweredbyPugs/Astrology-Server", target: "_blank" }
+    });
+    calloutBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+    });
+    new import_obsidian4.Setting(c).setName("Server URL").setDesc("Where the Astrology Server is reachable (e.g. http://baratie:3000 on the tailnet, or http://localhost:3000 locally).").addText((text) => text.setPlaceholder("http://localhost:3000").setValue(this.plugin.settings.serverUrl).onChange(async (value) => {
       this.plugin.settings.serverUrl = normalizeBaseUrl(value);
       await this.plugin.saveSettings();
-    }));
+    })).addExtraButton((btn) => btn.setIcon("github").setTooltip("Open Astrology Server on GitHub").onClick(() => window.open("https://github.com/PoweredbyPugs/Astrology-Server", "_blank")));
     const testWrap = c.createDiv({ cls: "moon-test-wrap" });
-    new import_obsidian5.Setting(testWrap).setName("Test server connection").setDesc("Pings /test on the configured server.").addButton((btn) => btn.setButtonText("Test").setCta().onClick(async () => {
+    new import_obsidian4.Setting(testWrap).setName("Test server connection").setDesc("Pings /test on the configured server.").addButton((btn) => btn.setButtonText("Test").setCta().onClick(async () => {
       var _a, _b, _c;
       btn.setDisabled(true).setButtonText("Testing\u2026");
       try {
-        const res = await (0, import_obsidian5.requestUrl)({
+        const res = await (0, import_obsidian4.requestUrl)({
           url: joinUrl(this.plugin.settings.serverUrl, "/test"),
           throw: false
         });
         if (res.status >= 200 && res.status < 300) {
-          new import_obsidian5.Notice(`Server OK: ${(_b = (_a = res.json) == null ? void 0 : _a.status) != null ? _b : "reachable"}`);
+          new import_obsidian4.Notice(`Server OK: ${(_b = (_a = res.json) == null ? void 0 : _a.status) != null ? _b : "reachable"}`);
         } else {
-          new import_obsidian5.Notice(`Server returned ${res.status}`);
+          new import_obsidian4.Notice(`Server returned ${res.status}`);
         }
       } catch (err) {
-        new import_obsidian5.Notice(`Connection failed: ${(_c = err == null ? void 0 : err.message) != null ? _c : err}`);
+        new import_obsidian4.Notice(`Connection failed: ${(_c = err == null ? void 0 : err.message) != null ? _c : err}`);
       } finally {
         btn.setDisabled(false).setButtonText("Test");
       }
@@ -2180,12 +2344,12 @@ var MoonSettingTab = class extends import_obsidian5.PluginSettingTab {
       cls: "moon-tab-intro",
       text: 'Track one or more natal charts saved on your Sweph server. The "default" chart is used when a command needs a single chart (Preview transits, Dashas, etc.). All tracked charts are used for cycle-crossings and bulk transit queries.'
     });
-    new import_obsidian5.Setting(c).setName("Tracked charts").setDesc(this.plugin.settings.trackedCharts.length === 0 ? "No charts tracked yet. Pick from the dropdown below." : this.plugin.settings.trackedCharts.map(
+    new import_obsidian4.Setting(c).setName("Tracked charts").setDesc(this.plugin.settings.trackedCharts.length === 0 ? "No charts tracked yet. Pick from the dropdown below." : this.plugin.settings.trackedCharts.map(
       (n) => n === this.plugin.settings.defaultChart ? `\u2605 ${n}` : n
     ).join(" \xB7 "));
     for (const name of this.plugin.settings.trackedCharts) {
       const isDefault = name === this.plugin.settings.defaultChart;
-      const row = new import_obsidian5.Setting(c).setName(`${isDefault ? "\u2605 " : ""}${name}`).setDesc(isDefault ? "Default chart for single-chart commands." : "");
+      const row = new import_obsidian4.Setting(c).setName(`${isDefault ? "\u2605 " : ""}${name}`).setDesc(isDefault ? "Default chart for single-chart commands." : "");
       if (!isDefault) {
         row.addButton((b) => b.setButtonText("Set default").onClick(async () => {
           this.plugin.settings.defaultChart = name;
@@ -2203,7 +2367,7 @@ var MoonSettingTab = class extends import_obsidian5.PluginSettingTab {
         this.display();
       }));
     }
-    const pickerSetting = new import_obsidian5.Setting(c).setName("Add a chart").setDesc("Charts saved on the server via /generate-chart.");
+    const pickerSetting = new import_obsidian4.Setting(c).setName("Add a chart").setDesc("Charts saved on the server via /generate-chart.");
     const dropdown = pickerSetting.controlEl.createEl("select", { cls: "dropdown" });
     const addBtn = pickerSetting.controlEl.createEl("button", { text: "Add" });
     const refreshBtn = pickerSetting.controlEl.createEl("button", { text: "Refresh" });
@@ -2216,7 +2380,7 @@ var MoonSettingTab = class extends import_obsidian5.PluginSettingTab {
       if (!choice)
         return;
       if (this.plugin.settings.trackedCharts.includes(choice)) {
-        new import_obsidian5.Notice(`Already tracking ${choice}`);
+        new import_obsidian4.Notice(`Already tracking ${choice}`);
         return;
       }
       this.plugin.settings.trackedCharts.push(choice);
@@ -2227,32 +2391,32 @@ var MoonSettingTab = class extends import_obsidian5.PluginSettingTab {
       this.display();
     });
     this.populateChartDropdown(dropdown);
-    new import_obsidian5.Setting(c).setName("Use natal chart for transits").setDesc("When on, the aspect commands return transits aspecting the saved chart's planets (via /transits/:name/now).").addToggle((t) => t.setValue(this.plugin.settings.useNatalChart).onChange(async (v) => {
+    new import_obsidian4.Setting(c).setName("Use natal chart for transits").setDesc("When on, the aspect commands return transits aspecting the saved chart's planets (via /transits/:name/now).").addToggle((t) => t.setValue(this.plugin.settings.useNatalChart).onChange(async (v) => {
       this.plugin.settings.useNatalChart = v;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian5.Setting(c).setName("Major aspects only").setDesc("Sends ?major=true to /transits/:name/now. Conjunction / Opposition / Trine / Square / Sextile only.").addToggle((t) => t.setValue(this.plugin.settings.majorOnly).onChange(async (v) => {
+    new import_obsidian4.Setting(c).setName("Major aspects only").setDesc("Sends ?major=true to /transits/:name/now. Conjunction / Opposition / Trine / Square / Sextile only.").addToggle((t) => t.setValue(this.plugin.settings.majorOnly).onChange(async (v) => {
       this.plugin.settings.majorOnly = v;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian5.Setting(c).setName("Natal orb (degrees)").setDesc("Tightness of natal transit aspects. The server applies this to /transits/:name/now.").addSlider((s) => s.setLimits(1, 12, 0.5).setValue(this.plugin.settings.natalOrb).setDynamicTooltip().onChange(async (v) => {
+    new import_obsidian4.Setting(c).setName("Natal orb (degrees)").setDesc("Tightness of natal transit aspects. The server applies this to /transits/:name/now.").addSlider((s) => s.setLimits(1, 12, 0.5).setValue(this.plugin.settings.natalOrb).setDynamicTooltip().onChange(async (v) => {
       this.plugin.settings.natalOrb = v;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian5.Setting(c).addButton((btn) => btn.setButtonText("Preview transits").setCta().onClick(async () => {
+    new import_obsidian4.Setting(c).addButton((btn) => btn.setButtonText("Preview transits").setCta().onClick(async () => {
       var _a;
       if (!this.plugin.settings.defaultChart) {
-        new import_obsidian5.Notice("Pick a saved chart first.");
+        new import_obsidian4.Notice("Pick a saved chart first.");
         return;
       }
       btn.setDisabled(true).setButtonText("Loading\u2026");
       try {
         const data = await this.plugin.getNatalTransits();
         const lines = filterNatalTransits(data.transits, this.plugin.settings).slice(0, 10).map(formatSkyAspectLine);
-        new import_obsidian5.Notice(`Top transits for ${data.name}:
+        new import_obsidian4.Notice(`Top transits for ${data.name}:
 ${lines.join("\n")}`, 12e3);
       } catch (err) {
-        new import_obsidian5.Notice(`Preview failed: ${(_a = err == null ? void 0 : err.message) != null ? _a : err}`, 8e3);
+        new import_obsidian4.Notice(`Preview failed: ${(_a = err == null ? void 0 : err.message) != null ? _a : err}`, 8e3);
       } finally {
         btn.setDisabled(false).setButtonText("Preview transits");
       }
@@ -2262,16 +2426,16 @@ ${lines.join("\n")}`, 12e3);
       cls: "moon-tab-intro",
       text: "Fill in birth details and save the chart to your Sweph server. Once saved, it appears in the dropdown above."
     });
-    new import_obsidian5.Setting(c).setName("Chart name").setDesc("A short identifier, e.g. your first name. Used as the URL slug.").addText((t) => t.setPlaceholder("chris").setValue(this.chartDraft.name).onChange((v) => {
+    new import_obsidian4.Setting(c).setName("Chart name").setDesc("A short identifier, e.g. your first name. Used as the URL slug.").addText((t) => t.setPlaceholder("chris").setValue(this.chartDraft.name).onChange((v) => {
       this.chartDraft.name = v.trim();
     }));
-    const dateSetting = new import_obsidian5.Setting(c).setName("Birth date");
+    const dateSetting = new import_obsidian4.Setting(c).setName("Birth date");
     const dateInput = dateSetting.controlEl.createEl("input", { type: "date" });
     dateInput.value = this.chartDraft.date;
     dateInput.addEventListener("change", () => {
       this.chartDraft.date = dateInput.value;
     });
-    const timeSetting = new import_obsidian5.Setting(c).setName("Birth time").setDesc("Local time at the birth location (24h). Accuracy matters most for the Ascendant / houses.");
+    const timeSetting = new import_obsidian4.Setting(c).setName("Birth time").setDesc("Local time at the birth location (24h). Accuracy matters most for the Ascendant / houses.");
     const timeInput = timeSetting.controlEl.createEl("input", { type: "time" });
     timeInput.value = this.chartDraft.time;
     timeInput.step = "60";
@@ -2279,7 +2443,7 @@ ${lines.join("\n")}`, 12e3);
       this.chartDraft.time = timeInput.value;
     });
     const locWrap = c.createDiv({ cls: "moon-loc-wrap" });
-    new import_obsidian5.Setting(locWrap).setName("Location").setDesc("Type a city, then pick a result to auto-fill latitude / longitude.").addText((text) => {
+    new import_obsidian4.Setting(locWrap).setName("Location").setDesc("Type a city, then pick a result to auto-fill latitude / longitude.").addText((text) => {
       text.setPlaceholder("e.g. Orlando, FL").setValue(this.chartDraft.locationName).onChange((value) => {
         if (this.locationSearchTimer)
           window.clearTimeout(this.locationSearchTimer);
@@ -2296,16 +2460,16 @@ ${lines.join("\n")}`, 12e3);
       return text;
     });
     const results = locWrap.createDiv({ cls: "moon-loc-results" });
-    new import_obsidian5.Setting(c).setName("Latitude").setDesc("Decimal degrees, north positive.").addText((t) => t.setPlaceholder("28.5383").setValue(Number.isFinite(this.chartDraft.latitude) ? String(this.chartDraft.latitude) : "").onChange((v) => {
+    new import_obsidian4.Setting(c).setName("Latitude").setDesc("Decimal degrees, north positive.").addText((t) => t.setPlaceholder("28.5383").setValue(Number.isFinite(this.chartDraft.latitude) ? String(this.chartDraft.latitude) : "").onChange((v) => {
       this.chartDraft.latitude = parseFloat(v);
     }));
-    new import_obsidian5.Setting(c).setName("Longitude").setDesc("Decimal degrees, east positive.").addText((t) => t.setPlaceholder("-81.3792").setValue(Number.isFinite(this.chartDraft.longitude) ? String(this.chartDraft.longitude) : "").onChange((v) => {
+    new import_obsidian4.Setting(c).setName("Longitude").setDesc("Decimal degrees, east positive.").addText((t) => t.setPlaceholder("-81.3792").setValue(Number.isFinite(this.chartDraft.longitude) ? String(this.chartDraft.longitude) : "").onChange((v) => {
       this.chartDraft.longitude = parseFloat(v);
     }));
-    new import_obsidian5.Setting(c).setName("Birth timezone").setDesc("IANA timezone of the birth location (e.g. America/New_York).").addText((t) => t.setPlaceholder("America/New_York").setValue(this.chartDraft.timezone).onChange((v) => {
+    new import_obsidian4.Setting(c).setName("Birth timezone").setDesc("IANA timezone of the birth location (e.g. America/New_York).").addText((t) => t.setPlaceholder("America/New_York").setValue(this.chartDraft.timezone).onChange((v) => {
       this.chartDraft.timezone = v.trim();
     }));
-    new import_obsidian5.Setting(c).addButton((btn) => btn.setButtonText("Save chart").setCta().onClick(async () => {
+    new import_obsidian4.Setting(c).addButton((btn) => btn.setButtonText("Save chart").setCta().onClick(async () => {
       var _a;
       btn.setDisabled(true).setButtonText("Saving\u2026");
       try {
@@ -2319,7 +2483,7 @@ ${lines.join("\n")}`, 12e3);
           save: true
         });
         await this.plugin.generateChart(body);
-        new import_obsidian5.Notice(`Saved chart "${body.name}"`);
+        new import_obsidian4.Notice(`Saved chart "${body.name}"`);
         if (!this.plugin.settings.trackedCharts.includes(body.name)) {
           this.plugin.settings.trackedCharts.push(body.name);
         }
@@ -2330,7 +2494,7 @@ ${lines.join("\n")}`, 12e3);
         this.cachedCharts = null;
         this.display();
       } catch (err) {
-        new import_obsidian5.Notice(`Save failed: ${(_a = err == null ? void 0 : err.message) != null ? _a : err}`, 8e3);
+        new import_obsidian4.Notice(`Save failed: ${(_a = err == null ? void 0 : err.message) != null ? _a : err}`, 8e3);
       } finally {
         btn.setDisabled(false).setButtonText("Save chart");
       }
@@ -2362,7 +2526,7 @@ ${lines.join("\n")}`, 12e3);
     const loading = container.createDiv({ cls: "moon-loc-loading", text: "Searching\u2026" });
     try {
       const url = `https://nominatim.openstreetmap.org/search?format=json&limit=5&q=${encodeURIComponent(query)}`;
-      const res = await (0, import_obsidian5.requestUrl)({
+      const res = await (0, import_obsidian4.requestUrl)({
         url,
         headers: { "User-Agent": "obsidian-moon-plugin/1.1 (https://github.com/PoweredbyPugs/moon-phase)" },
         throw: false
@@ -2399,7 +2563,7 @@ ${lines.join("\n")}`, 12e3);
       text: "Toggle which planets appear in position lists and aspect calculations."
     });
     for (const planet of PLANETS) {
-      new import_obsidian5.Setting(c).setName(`${planetGlyph(planet)} ${planet}`).addToggle((t) => t.setValue(this.plugin.settings.planets[planet]).onChange(async (v) => {
+      new import_obsidian4.Setting(c).setName(`${planetGlyph(planet)} ${planet}`).addToggle((t) => t.setValue(this.plugin.settings.planets[planet]).onChange(async (v) => {
         this.plugin.settings.planets[planet] = v;
         await this.plugin.saveSettings();
       }));
@@ -2412,7 +2576,7 @@ ${lines.join("\n")}`, 12e3);
       text: "Toggle which aspect types appear in aspect commands. (Orb for sky-to-sky aspects comes from the server; orb for natal transits is set on the Natal Chart tab.)"
     });
     for (const aspect of ASPECTS) {
-      new import_obsidian5.Setting(c).setName(`${ASPECT_SYMBOLS[aspect]} ${aspect}`).addToggle((t) => t.setValue(this.plugin.settings.aspects[aspect]).onChange(async (v) => {
+      new import_obsidian4.Setting(c).setName(`${ASPECT_SYMBOLS[aspect]} ${aspect}`).addToggle((t) => t.setValue(this.plugin.settings.aspects[aspect]).onChange(async (v) => {
         this.plugin.settings.aspects[aspect] = v;
         await this.plugin.saveSettings();
       }));
@@ -2424,35 +2588,35 @@ ${lines.join("\n")}`, 12e3);
       cls: "moon-tab-intro",
       text: "Toggle additional astrological / divinatory techniques. Disabled techniques are hidden from the command palette. Ki and Hexagram run entirely client-side; midpoints / eclipses / dashas hit the Sweph server."
     });
-    new import_obsidian5.Setting(c).setName("9 Star Ki").setDesc("Today's Ki cascade (year/month/third) and natal Ki personal-cycle commands. Pure-TS, no server call.").addToggle((t) => t.setValue(this.plugin.settings.techniques.ki).onChange(async (v) => {
+    new import_obsidian4.Setting(c).setName("9 Star Ki").setDesc("Today's Ki cascade (year/month/third) and natal Ki personal-cycle commands. Pure-TS, no server call.").addToggle((t) => t.setValue(this.plugin.settings.techniques.ki).onChange(async (v) => {
       this.plugin.settings.techniques.ki = v;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian5.Setting(c).setName("Birth date for natal Ki").setDesc("YYYY-MM-DD. Only used when no saved chart is selected. Optional.").addText((t) => t.setPlaceholder("1986-05-01").setValue(this.plugin.settings.birthDate).onChange(async (v) => {
+    new import_obsidian4.Setting(c).setName("Birth date for natal Ki").setDesc("YYYY-MM-DD. Only used when no saved chart is selected. Optional.").addText((t) => t.setPlaceholder("1986-05-01").setValue(this.plugin.settings.birthDate).onChange(async (v) => {
       this.plugin.settings.birthDate = v.trim();
       await this.plugin.saveSettings();
     }));
-    new import_obsidian5.Setting(c).setName("I Ching Hexagram").setDesc("Three-coin cast \u2192 primary hexagram + relating hexagram (if changing lines). Pure-TS.").addToggle((t) => t.setValue(this.plugin.settings.techniques.hexagram).onChange(async (v) => {
+    new import_obsidian4.Setting(c).setName("I Ching Hexagram").setDesc("Three-coin cast \u2192 primary hexagram + relating hexagram (if changing lines). Pure-TS.").addToggle((t) => t.setValue(this.plugin.settings.techniques.hexagram).onChange(async (v) => {
       this.plugin.settings.techniques.hexagram = v;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian5.Setting(c).setName("Midpoints").setDesc("Current transits aspecting natal midpoints. Requires Sweph-server endpoint /midpoint-transits/:name.").addToggle((t) => t.setValue(this.plugin.settings.techniques.midpoints).onChange(async (v) => {
+    new import_obsidian4.Setting(c).setName("Midpoints").setDesc("Current transits aspecting natal midpoints (90-degree dial / cosmobiology).").addToggle((t) => t.setValue(this.plugin.settings.techniques.midpoints).onChange(async (v) => {
       this.plugin.settings.techniques.midpoints = v;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian5.Setting(c).setName("Midpoint orb (degrees)").setDesc("Tightness of midpoint-transit aspects. Sent as ?orb=N.").addSlider((s) => s.setLimits(0.5, 5, 0.5).setValue(this.plugin.settings.midpointOrb).setDynamicTooltip().onChange(async (v) => {
+    new import_obsidian4.Setting(c).setName("Midpoint orb (degrees)").setDesc("Tightness of midpoint-transit aspects. Sent as ?orb=N.").addSlider((s) => s.setLimits(0.5, 5, 0.5).setValue(this.plugin.settings.midpointOrb).setDynamicTooltip().onChange(async (v) => {
       this.plugin.settings.midpointOrb = v;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian5.Setting(c).setName("Eclipses").setDesc('"Next Eclipse" command. Requires Sweph-server endpoint /eclipses.').addToggle((t) => t.setValue(this.plugin.settings.techniques.eclipses).onChange(async (v) => {
+    new import_obsidian4.Setting(c).setName("Eclipses").setDesc("Solar and lunar eclipses, with sign + degree.").addToggle((t) => t.setValue(this.plugin.settings.techniques.eclipses).onChange(async (v) => {
       this.plugin.settings.techniques.eclipses = v;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian5.Setting(c).setName("Eclipse lookahead (months)").setDesc('How far ahead "Next Eclipse" searches.').addSlider((s) => s.setLimits(1, 24, 1).setValue(this.plugin.settings.eclipseLookaheadMonths).setDynamicTooltip().onChange(async (v) => {
+    new import_obsidian4.Setting(c).setName("Eclipse lookahead (months)").setDesc('How far ahead "Next Eclipse" searches.').addSlider((s) => s.setLimits(1, 24, 1).setValue(this.plugin.settings.eclipseLookaheadMonths).setDynamicTooltip().onChange(async (v) => {
       this.plugin.settings.eclipseLookaheadMonths = v;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian5.Setting(c).setName("Vimshottari Dashas").setDesc("Vedic dasha periods for a saved chart. Requires Sweph-server endpoint /dashas/:name.").addToggle((t) => t.setValue(this.plugin.settings.techniques.dashas).onChange(async (v) => {
+    new import_obsidian4.Setting(c).setName("Vimshottari Dashas").setDesc("Vedic Vimshottari dasha periods for a saved chart, derived from the natal Moon's nakshatra.").addToggle((t) => t.setValue(this.plugin.settings.techniques.dashas).onChange(async (v) => {
       this.plugin.settings.techniques.dashas = v;
       await this.plugin.saveSettings();
     }));
@@ -2464,11 +2628,9 @@ ${lines.join("\n")}`, 12e3);
       text: "Divination tools. Currently I Ching via the Hexagram Oracle modal; Tarot is on the roadmap. Interpretations are pulled from the configured source in your knowledge graph (default: the Gnostic Book of Changes by James DeKorne / Michael Servetus \u2014 public-domain at jamesdekorne.com)."
     });
     c.createEl("h3", { text: "I Ching" });
-    new import_obsidian5.Setting(c).setName("Interpretation source").setDesc('Source title (substring match) used when looking up hexagram and line interpretations in the knowledge graph. Default: "Gnostic Book of Changes". Filtered by tradition = "iching".').addText((t) => t.setPlaceholder("Gnostic Book of Changes").setValue(this.plugin.settings.oracle.hexagramSource).onChange(async (v) => {
-      this.plugin.settings.oracle.hexagramSource = v.trim();
-      await this.plugin.saveSettings();
-    }));
-    new import_obsidian5.Setting(c).setName('"From the day" method').setDesc('How the modal derives a hexagram for "From the day". Plum Blossom uses year+month+day for the trigrams and year+month+day+hour for the changing line (always 1 changing line). YMD hash is a stable daily hexagram with no changing lines.').addDropdown((dd) => {
+    const sourceCallout = c.createEl("p", { cls: "moon-tab-intro" });
+    sourceCallout.innerHTML = `Interpretations come from <strong>The Gnostic Book of Changes</strong> by James DeKorne (Michael Servetus, public-domain \u2014 <a href="https://www.jamesdekorne.com/GBCh/GBC.htm" target="_blank">jamesdekorne.com</a>). The corpus must already be ingested into your knowledge graph for line-by-line drill-down to work.`;
+    new import_obsidian4.Setting(c).setName('"From the day" method').setDesc('How the modal derives a hexagram for "From the day". Plum Blossom uses year+month+day for the trigrams and year+month+day+hour for the changing line (always 1 changing line). YMD hash is a stable daily hexagram with no changing lines.').addDropdown((dd) => {
       dd.addOption("plum-blossom", "Plum Blossom (year+month+day+hour)");
       dd.addOption("ymd-hash", "YMD hash (stable daily, no changing line)");
       dd.setValue(this.plugin.settings.oracle.dayMethod);
@@ -2477,11 +2639,17 @@ ${lines.join("\n")}`, 12e3);
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian5.Setting(c).setName("Journal folder").setDesc('Vault folder where oracle casts are saved when you click "Save to journal" in the modal.').addText((t) => t.setPlaceholder("ObsidianMoon/oracle").setValue(this.plugin.settings.oracle.journalFolder).onChange(async (v) => {
-      this.plugin.settings.oracle.journalFolder = v.trim();
-      await this.plugin.saveSettings();
-    }));
-    new import_obsidian5.Setting(c).setName("Autosave every cast").setDesc('When on, every cast from the modal is silently saved to the journal folder. When off, you have to click "Save to journal" explicitly.').addToggle((t) => t.setValue(this.plugin.settings.oracle.autosaveCasts).onChange(async (v) => {
+    this.addFolderSetting(
+      c,
+      "Journal folder",
+      'Vault folder where oracle casts are saved when you click "Save to journal" in the modal.',
+      this.plugin.settings.oracle.journalFolder,
+      async (v) => {
+        this.plugin.settings.oracle.journalFolder = v;
+        await this.plugin.saveSettings();
+      }
+    );
+    new import_obsidian4.Setting(c).setName("Autosave every cast").setDesc('When on, every cast from the modal is silently saved to the journal folder. When off, you have to click "Save to journal" explicitly.').addToggle((t) => t.setValue(this.plugin.settings.oracle.autosaveCasts).onChange(async (v) => {
       this.plugin.settings.oracle.autosaveCasts = v;
       await this.plugin.saveSettings();
     }));
@@ -2497,7 +2665,7 @@ ${lines.join("\n")}`, 12e3);
       cls: "moon-tab-intro",
       text: 'Connect to a knowledge graph of astrological interpretations. Currently supports Neo4j with the schema produced by the Stella ingest pipeline (Interpretation nodes with a full-text index). When connected, "Knowledge Search" and "Interpret Selected Placement" commands return grounded snippets from the corpus.'
     });
-    new import_obsidian5.Setting(c).setName("Backend").setDesc('Where to look up interpretations. "Off" disables knowledge commands.').addDropdown((dd) => {
+    new import_obsidian4.Setting(c).setName("Backend").setDesc('Where to look up interpretations. "Off" disables knowledge commands.').addDropdown((dd) => {
       dd.addOption("off", "Off");
       dd.addOption("neo4j", "Neo4j");
       dd.setValue(this.plugin.settings.knowledge.backend);
@@ -2509,22 +2677,22 @@ ${lines.join("\n")}`, 12e3);
       });
     });
     if (this.plugin.settings.knowledge.backend === "neo4j") {
-      new import_obsidian5.Setting(c).setName("Neo4j HTTP URI").setDesc("Neo4j HTTP endpoint (e.g. http://localhost:7474). The plugin talks Cypher over Neo4j's transactional HTTP API \u2014 no native driver dependency.").addText((t) => t.setPlaceholder("http://localhost:7474").setValue(this.plugin.settings.knowledge.neo4jHttpUri).onChange(async (v) => {
+      new import_obsidian4.Setting(c).setName("Neo4j HTTP URI").setDesc("Neo4j HTTP endpoint (e.g. http://localhost:7474). The plugin talks Cypher over Neo4j's transactional HTTP API \u2014 no native driver dependency.").addText((t) => t.setPlaceholder("http://localhost:7474").setValue(this.plugin.settings.knowledge.neo4jHttpUri).onChange(async (v) => {
         this.plugin.settings.knowledge.neo4jHttpUri = v.trim();
         await this.plugin.saveSettings();
         this.plugin.rebuildKnowledgeBackend();
       }));
-      new import_obsidian5.Setting(c).setName("Database").setDesc("Neo4j database name (default: neo4j).").addText((t) => t.setPlaceholder("neo4j").setValue(this.plugin.settings.knowledge.neo4jDatabase).onChange(async (v) => {
+      new import_obsidian4.Setting(c).setName("Database").setDesc("Neo4j database name (default: neo4j).").addText((t) => t.setPlaceholder("neo4j").setValue(this.plugin.settings.knowledge.neo4jDatabase).onChange(async (v) => {
         this.plugin.settings.knowledge.neo4jDatabase = v.trim() || "neo4j";
         await this.plugin.saveSettings();
         this.plugin.rebuildKnowledgeBackend();
       }));
-      new import_obsidian5.Setting(c).setName("Username").addText((t) => t.setPlaceholder("neo4j").setValue(this.plugin.settings.knowledge.neo4jUser).onChange(async (v) => {
+      new import_obsidian4.Setting(c).setName("Username").addText((t) => t.setPlaceholder("neo4j").setValue(this.plugin.settings.knowledge.neo4jUser).onChange(async (v) => {
         this.plugin.settings.knowledge.neo4jUser = v.trim();
         await this.plugin.saveSettings();
         this.plugin.rebuildKnowledgeBackend();
       }));
-      new import_obsidian5.Setting(c).setName("Password").setDesc("Stored in plain text in data.json. Use a read-only Neo4j account when possible.").addText((t) => {
+      new import_obsidian4.Setting(c).setName("Password").setDesc("Stored in plain text in data.json. Use a read-only Neo4j account when possible.").addText((t) => {
         t.inputEl.type = "password";
         t.setValue(this.plugin.settings.knowledge.neo4jPassword).onChange(async (v) => {
           this.plugin.settings.knowledge.neo4jPassword = v;
@@ -2532,25 +2700,25 @@ ${lines.join("\n")}`, 12e3);
           this.plugin.rebuildKnowledgeBackend();
         });
       });
-      new import_obsidian5.Setting(c).setName("Full-text index name").setDesc('Neo4j full-text index on Interpretation.text. Defaults to "interpretation_text" (matches Stella ingest).').addText((t) => t.setPlaceholder("interpretation_text").setValue(this.plugin.settings.knowledge.neo4jIndexName).onChange(async (v) => {
+      new import_obsidian4.Setting(c).setName("Full-text index name").setDesc('Neo4j full-text index on Interpretation.text. Defaults to "interpretation_text" (matches Stella ingest).').addText((t) => t.setPlaceholder("interpretation_text").setValue(this.plugin.settings.knowledge.neo4jIndexName).onChange(async (v) => {
         this.plugin.settings.knowledge.neo4jIndexName = v.trim() || "interpretation_text";
         await this.plugin.saveSettings();
         this.plugin.rebuildKnowledgeBackend();
       }));
-      new import_obsidian5.Setting(c).setName("Default result limit").setDesc("How many chunks to return per Knowledge Search.").addSlider((s) => s.setLimits(1, 20, 1).setValue(this.plugin.settings.knowledge.defaultResultLimit).setDynamicTooltip().onChange(async (v) => {
+      new import_obsidian4.Setting(c).setName("Default result limit").setDesc("How many chunks to return per Knowledge Search.").addSlider((s) => s.setLimits(1, 20, 1).setValue(this.plugin.settings.knowledge.defaultResultLimit).setDynamicTooltip().onChange(async (v) => {
         this.plugin.settings.knowledge.defaultResultLimit = v;
         await this.plugin.saveSettings();
       }));
-      new import_obsidian5.Setting(c).setName("Test connection").setDesc("Run a stats query to confirm the backend is reachable.").addButton((btn) => btn.setButtonText("Test").setCta().onClick(async () => {
+      new import_obsidian4.Setting(c).setName("Test connection").setDesc("Run a stats query to confirm the backend is reachable.").addButton((btn) => btn.setButtonText("Test").setCta().onClick(async () => {
         var _a, _b;
         btn.setDisabled(true).setButtonText("Testing\u2026");
         try {
           const stats = await this.plugin.knowledge.stats();
-          new import_obsidian5.Notice(
+          new import_obsidian4.Notice(
             `Connected: ${stats.interpretationCount} interpretation nodes, ${(_a = stats.authorCount) != null ? _a : "?"} authors.`
           );
         } catch (err) {
-          new import_obsidian5.Notice(`Connection failed: ${(_b = err == null ? void 0 : err.message) != null ? _b : err}`, 8e3);
+          new import_obsidian4.Notice(`Connection failed: ${(_b = err == null ? void 0 : err.message) != null ? _b : err}`, 8e3);
         } finally {
           btn.setDisabled(false).setButtonText("Test");
         }
@@ -2559,15 +2727,16 @@ ${lines.join("\n")}`, 12e3);
   }
   /* ── LLM ── */
   renderLLM(c) {
+    var _a;
     c.createEl("p", {
       cls: "moon-tab-intro",
-      text: "Pick an LLM provider for the synthesis commands (Insert Chart Reading, Discover Patterns, Interpret with LLM). The plugin uses your provider directly \u2014 Obsidian Moon never sees your API keys. Generated readings are also saved to a vault folder so you can refer back to them."
+      text: "LLM provider for synthesis commands (Insert Chart Reading, Discover Patterns, Interpret with LLM, modal-mode LLM-synthesized hexagram readings). The plugin calls the provider directly using your credentials. Per-provider creds are kept separate so switching doesn't blow them away."
     });
-    new import_obsidian5.Setting(c).setName("Provider").addDropdown((dd) => {
+    new import_obsidian4.Setting(c).setName("Provider").addDropdown((dd) => {
       dd.addOption("off", "Off");
-      dd.addOption("openai", "OpenAI (or OpenAI-compatible)");
-      dd.addOption("anthropic", "Anthropic Claude");
-      dd.addOption("ollama", "Ollama (local)");
+      for (const def2 of Object.values(PROVIDERS)) {
+        dd.addOption(def2.id, def2.label);
+      }
       dd.setValue(this.plugin.settings.llm.provider);
       dd.onChange(async (v) => {
         this.plugin.settings.llm.provider = v;
@@ -2576,67 +2745,183 @@ ${lines.join("\n")}`, 12e3);
         this.display();
       });
     });
-    const provider = this.plugin.settings.llm.provider;
-    new import_obsidian5.Setting(c).setName("Model").setDesc("Model name as the provider expects it (e.g. gpt-4o-mini, claude-sonnet-4-6, llama3.1:8b).").addText((t) => t.setPlaceholder("claude-sonnet-4-6").setValue(this.plugin.settings.llm.model).onChange(async (v) => {
-      this.plugin.settings.llm.model = v.trim();
+    const providerId = this.plugin.settings.llm.provider;
+    if (providerId === "off")
+      return;
+    const def = PROVIDERS[providerId];
+    const creds = (_a = this.plugin.settings.llm.providers[providerId]) != null ? _a : { apiKey: "", baseUrl: def.defaultBaseUrl, model: "" };
+    this.plugin.settings.llm.providers[providerId] = creds;
+    new import_obsidian4.Setting(c).setName("Base URL").setDesc(`Default: ${def.defaultBaseUrl}. Override only if you're using a proxy or a self-hosted variant.`).addText((t) => t.setPlaceholder(def.defaultBaseUrl).setValue(creds.baseUrl).onChange(async (v) => {
+      creds.baseUrl = v.trim();
+      await this.plugin.saveSettings();
+      this.plugin.rebuildLLMProvider();
+    }));
+    new import_obsidian4.Setting(c).setName(providerId === "openclaw" ? "Agent (model field)" : "Model").setDesc(providerId === "openclaw" ? "OpenClaw routes to an agent via the OpenAI-compatible model field. e.g. openclaw/default, openclaw/main, openclaw/<agent-id>." : "Provider-specific model identifier. e.g. gpt-4o-mini, claude-sonnet-4-6, anthropic/claude-sonnet-4.5, gemini-2.5-pro, llama3.1:8b.").addText((t) => t.setPlaceholder(def.id === "openclaw" ? "openclaw/default" : "model id").setValue(creds.model).onChange(async (v) => {
+      creds.model = v.trim();
       await this.plugin.saveSettings();
     }));
-    if (provider === "openai") {
-      new import_obsidian5.Setting(c).setName("OpenAI base URL").addText((t) => t.setPlaceholder("https://api.openai.com").setValue(this.plugin.settings.llm.openaiBaseUrl).onChange(async (v) => {
-        this.plugin.settings.llm.openaiBaseUrl = v.trim();
+    new import_obsidian4.Setting(c).setName("API key").setDesc(def.needsKey ? "Required. Stored in plain text in data.json \u2014 keep that file out of git." : "Optional for this provider (local gateway). Set only if your deployment requires Bearer auth.").addText((t) => {
+      t.inputEl.type = "password";
+      t.setPlaceholder(def.needsKey ? "required" : "optional").setValue(creds.apiKey).onChange(async (v) => {
+        creds.apiKey = v;
         await this.plugin.saveSettings();
         this.plugin.rebuildLLMProvider();
-      }));
-      new import_obsidian5.Setting(c).setName("OpenAI API key").addText((t) => {
-        t.inputEl.type = "password";
-        t.setValue(this.plugin.settings.llm.openaiApiKey).onChange(async (v) => {
-          this.plugin.settings.llm.openaiApiKey = v;
-          await this.plugin.saveSettings();
-          this.plugin.rebuildLLMProvider();
-        });
       });
-    } else if (provider === "anthropic") {
-      new import_obsidian5.Setting(c).setName("Anthropic base URL").addText((t) => t.setPlaceholder("https://api.anthropic.com").setValue(this.plugin.settings.llm.anthropicBaseUrl).onChange(async (v) => {
-        this.plugin.settings.llm.anthropicBaseUrl = v.trim();
+    });
+    new import_obsidian4.Setting(c).setName("Max tokens").addSlider((s) => s.setLimits(256, 4096, 64).setValue(this.plugin.settings.llm.maxTokens).setDynamicTooltip().onChange(async (v) => {
+      this.plugin.settings.llm.maxTokens = v;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian4.Setting(c).setName("Temperature").addSlider((s) => s.setLimits(0, 1.5, 0.05).setValue(this.plugin.settings.llm.temperature).setDynamicTooltip().onChange(async (v) => {
+      this.plugin.settings.llm.temperature = v;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian4.Setting(c).setName("Knowledge chunks per synthesis").setDesc("How many knowledge graph chunks to retrieve and inline as context for each LLM call.").addSlider((s) => s.setLimits(0, 20, 1).setValue(this.plugin.settings.llm.knowledgeLimit).setDynamicTooltip().onChange(async (v) => {
+      this.plugin.settings.llm.knowledgeLimit = v;
+      await this.plugin.saveSettings();
+    }));
+    this.addFolderSetting(
+      c,
+      "Memory folder",
+      "Vault folder where generated readings are saved with frontmatter for Dataview. Leave empty to disable memory.",
+      this.plugin.settings.llm.memoryFolder,
+      async (v) => {
+        this.plugin.settings.llm.memoryFolder = v;
         await this.plugin.saveSettings();
-        this.plugin.rebuildLLMProvider();
-      }));
-      new import_obsidian5.Setting(c).setName("Anthropic API key").addText((t) => {
-        t.inputEl.type = "password";
-        t.setValue(this.plugin.settings.llm.anthropicApiKey).onChange(async (v) => {
-          this.plugin.settings.llm.anthropicApiKey = v;
+      }
+    );
+  }
+  /* ── Commands ── */
+  renderCommands(c) {
+    var _a;
+    c.createEl("p", {
+      cls: "moon-tab-intro",
+      text: `All commands that Obsidian Moon registers. Disable any you do not want cluttering the palette \u2014 takes effect after reloading the plugin. Below, build "custom commands" that combine existing ones in sequence (e.g. Today's Moon + Today's Ki + Cast Hexagram, all inserted at the cursor with a separator between).`
+    });
+    const grouped = /* @__PURE__ */ new Map();
+    for (const cmd of this.plugin.commandRegistry) {
+      const list = (_a = grouped.get(cmd.group)) != null ? _a : [];
+      list.push(cmd);
+      grouped.set(cmd.group, list);
+    }
+    for (const [group, cmds] of grouped) {
+      c.createEl("h3", { text: group });
+      for (const cmd of cmds) {
+        new import_obsidian4.Setting(c).setName(cmd.name).setDesc(`id: ${cmd.id}`).addToggle((t) => t.setValue(cmd.registered).onChange(async (v) => {
+          const list = this.plugin.settings.disabledCommands;
+          const i = list.indexOf(cmd.id);
+          if (v && i >= 0)
+            list.splice(i, 1);
+          else if (!v && i < 0)
+            list.push(cmd.id);
           await this.plugin.saveSettings();
-          this.plugin.rebuildLLMProvider();
+          cmd.registered = v;
+          new import_obsidian4.Notice(`${v ? "Enabled" : "Disabled"} "${cmd.name}". Reload the plugin to take effect.`);
+        }));
+      }
+    }
+    c.createEl("h3", { text: "Custom commands" });
+    c.createEl("p", {
+      cls: "moon-tab-intro",
+      text: "Each custom command runs the listed steps in sequence. Each step inserts its output at the cursor; a separator goes between steps. Chart Override lets a step run against a chart other than your default (useful for relationship-style commands that pull from multiple charts)."
+    });
+    const customList = c.createDiv({ cls: "moon-custom-cmd-list" });
+    const renderCustom = () => {
+      customList.empty();
+      const list = this.plugin.settings.customCommands;
+      if (list.length === 0) {
+        customList.createEl("p", {
+          cls: "moon-tab-intro",
+          text: 'No custom commands yet. Click "Add custom command" below.'
         });
-      });
-    } else if (provider === "ollama") {
-      new import_obsidian5.Setting(c).setName("Ollama base URL").setDesc("Local Ollama server, OpenAI-compatible API.").addText((t) => t.setPlaceholder("http://localhost:11434").setValue(this.plugin.settings.llm.ollamaBaseUrl).onChange(async (v) => {
-        this.plugin.settings.llm.ollamaBaseUrl = v.trim();
+      }
+      list.forEach((cmd, idx) => this.renderCustomCommandCard(customList, cmd, idx, renderCustom));
+    };
+    renderCustom();
+    new import_obsidian4.Setting(c).addButton((b) => b.setButtonText("+ Add custom command").setCta().onClick(async () => {
+      const newCmd = {
+        id: `cmd-${Date.now().toString(36)}`,
+        name: "New custom command",
+        separator: "\n\n",
+        steps: []
+      };
+      this.plugin.settings.customCommands.push(newCmd);
+      await this.plugin.saveSettings();
+      renderCustom();
+    }));
+  }
+  renderCustomCommandCard(parent, cmd, idx, rerender) {
+    const card = parent.createDiv({ cls: "moon-custom-cmd-card" });
+    const header = card.createDiv({ cls: "moon-custom-cmd-header" });
+    const nameInput = header.createEl("input", { type: "text", value: cmd.name });
+    nameInput.placeholder = "Custom command name";
+    nameInput.addEventListener("change", async () => {
+      cmd.name = nameInput.value.trim() || "Custom command";
+      await this.plugin.saveSettings();
+    });
+    const delBtn = header.createEl("button", { text: "\xD7", cls: "moon-custom-cmd-delete" });
+    delBtn.title = "Delete this custom command";
+    delBtn.addEventListener("click", async () => {
+      this.plugin.settings.customCommands.splice(idx, 1);
+      await this.plugin.saveSettings();
+      rerender();
+    });
+    new import_obsidian4.Setting(card).setName("Separator between steps").setDesc("Inserted at the cursor between each step. Use \\n\\n for a blank line.").addText((t) => t.setPlaceholder("\\n\\n").setValue(cmd.separator.replace(/\n/g, "\\n")).onChange(async (v) => {
+      cmd.separator = v.replace(/\\n/g, "\n");
+      await this.plugin.saveSettings();
+    }));
+    const stepsWrap = card.createDiv({ cls: "moon-custom-cmd-steps" });
+    cmd.steps.forEach((step, i) => {
+      const stepCard = stepsWrap.createDiv({ cls: "moon-custom-cmd-step" });
+      new import_obsidian4.Setting(stepCard).setName(`Step ${i + 1}`).addDropdown((dd) => {
+        dd.addOption("", "\u2014 pick a command \u2014");
+        for (const r of this.plugin.commandRegistry) {
+          dd.addOption(r.id, `${r.group}: ${r.name}`);
+        }
+        dd.setValue(step.commandId);
+        dd.onChange(async (v) => {
+          step.commandId = v;
+          await this.plugin.saveSettings();
+        });
+      }).addDropdown((dd) => {
+        var _a;
+        dd.addOption("", "Use default chart");
+        for (const cName of this.plugin.settings.trackedCharts)
+          dd.addOption(cName, `\u2192 ${cName}`);
+        dd.setValue((_a = step.chartOverride) != null ? _a : "");
+        dd.onChange(async (v) => {
+          step.chartOverride = v || void 0;
+          await this.plugin.saveSettings();
+        });
+      }).addExtraButton((b) => b.setIcon("cross").setTooltip("Remove step").onClick(async () => {
+        cmd.steps.splice(i, 1);
         await this.plugin.saveSettings();
-        this.plugin.rebuildLLMProvider();
+        rerender();
       }));
-    }
-    if (provider !== "off") {
-      new import_obsidian5.Setting(c).setName("Max tokens").addSlider((s) => s.setLimits(256, 4096, 64).setValue(this.plugin.settings.llm.maxTokens).setDynamicTooltip().onChange(async (v) => {
-        this.plugin.settings.llm.maxTokens = v;
-        await this.plugin.saveSettings();
-      }));
-      new import_obsidian5.Setting(c).setName("Temperature").addSlider((s) => s.setLimits(0, 1.5, 0.05).setValue(this.plugin.settings.llm.temperature).setDynamicTooltip().onChange(async (v) => {
-        this.plugin.settings.llm.temperature = v;
-        await this.plugin.saveSettings();
-      }));
-      new import_obsidian5.Setting(c).setName("Knowledge chunks per synthesis").setDesc("How many knowledge graph chunks to retrieve and inline as context for each LLM call.").addSlider((s) => s.setLimits(0, 20, 1).setValue(this.plugin.settings.llm.knowledgeLimit).setDynamicTooltip().onChange(async (v) => {
-        this.plugin.settings.llm.knowledgeLimit = v;
-        await this.plugin.saveSettings();
-      }));
-      new import_obsidian5.Setting(c).setName("Memory folder").setDesc("Vault folder where generated readings are saved (with frontmatter for Dataview). Leave empty to disable memory.").addText((t) => t.setPlaceholder("ObsidianMoon/memory").setValue(this.plugin.settings.llm.memoryFolder).onChange(async (v) => {
-        this.plugin.settings.llm.memoryFolder = v.trim();
-        await this.plugin.saveSettings();
-      }));
-    }
+    });
+    new import_obsidian4.Setting(card).addButton((b) => b.setButtonText("+ Add step").onClick(async () => {
+      cmd.steps.push({ commandId: "" });
+      await this.plugin.saveSettings();
+      rerender();
+    }));
+    card.createEl("p", {
+      cls: "moon-tab-intro",
+      text: 'Registered as command id "custom-' + cmd.id + '". Reload the plugin after editing for changes to appear in the command palette.'
+    });
+  }
+  /* Folder-text-with-browse helper used by the Oracle and LLM tabs. */
+  addFolderSetting(parent, name, desc, currentValue, onSet) {
+    return new import_obsidian4.Setting(parent).setName(name).setDesc(desc).addText((t) => t.setPlaceholder("vault/path").setValue(currentValue).onChange((v) => {
+      void onSet(v.trim());
+    })).addExtraButton((btn) => btn.setIcon("folder").setTooltip("Browse vault folders").onClick(() => {
+      new FolderPickerModal(this.plugin.app, async (path) => {
+        await onSet(path);
+        this.display();
+      }).open();
+    }));
   }
 };
-var CycleModal = class extends import_obsidian5.Modal {
+var CycleModal = class extends import_obsidian4.Modal {
   constructor(app, plugin, editor, opts) {
     var _a, _b;
     super(app);
@@ -2656,7 +2941,7 @@ var CycleModal = class extends import_obsidian5.Modal {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.createEl("h2", { text: "Plot Planetary Cycle" });
-    new import_obsidian5.Setting(contentEl).setName("Planet").addDropdown((dd) => {
+    new import_obsidian4.Setting(contentEl).setName("Planet").addDropdown((dd) => {
       for (const p of ["sun", "moon", "mercury", "venus", "mars", "jupiter", "saturn", "uranus", "neptune", "pluto"]) {
         dd.addOption(p, p.charAt(0).toUpperCase() + p.slice(1));
       }
@@ -2665,19 +2950,19 @@ var CycleModal = class extends import_obsidian5.Modal {
         this.planet = v;
       });
     });
-    const startSetting = new import_obsidian5.Setting(contentEl).setName("Start date");
+    const startSetting = new import_obsidian4.Setting(contentEl).setName("Start date");
     const startInput = startSetting.controlEl.createEl("input", { type: "date" });
     startInput.value = this.start;
     startInput.addEventListener("change", () => {
       this.start = startInput.value;
     });
-    const endSetting = new import_obsidian5.Setting(contentEl).setName("End date");
+    const endSetting = new import_obsidian4.Setting(contentEl).setName("End date");
     const endInput = endSetting.controlEl.createEl("input", { type: "date" });
     endInput.value = this.end;
     endInput.addEventListener("change", () => {
       this.end = endInput.value;
     });
-    new import_obsidian5.Setting(contentEl).setName("Sample interval").addDropdown((dd) => {
+    new import_obsidian4.Setting(contentEl).setName("Sample interval").addDropdown((dd) => {
       for (const i of ["hourly", "6h", "daily", "weekly"])
         dd.addOption(i, i);
       dd.setValue(this.interval);
@@ -2713,7 +2998,7 @@ var CycleModal = class extends import_obsidian5.Modal {
         this.editor.replaceSelection(formatCycleResponse(data, this.quickCrossings));
         this.close();
       } catch (err) {
-        new import_obsidian5.Notice(`Cycle failed: ${(_a2 = err == null ? void 0 : err.message) != null ? _a2 : err}`, 8e3);
+        new import_obsidian4.Notice(`Cycle failed: ${(_a2 = err == null ? void 0 : err.message) != null ? _a2 : err}`, 8e3);
         runBtn.disabled = false;
         runBtn.setText("Plot cycle");
       }
@@ -2762,7 +3047,7 @@ function formatCycleResponse(data, eventsOnly) {
   }
   return lines.join("\n");
 }
-var KnowledgeSearchModal = class extends import_obsidian5.Modal {
+var KnowledgeSearchModal = class extends import_obsidian4.Modal {
   constructor(app, plugin, editor) {
     super(app);
     this.query = "";
@@ -2805,7 +3090,7 @@ var KnowledgeSearchModal = class extends import_obsidian5.Modal {
         this.editor.replaceSelection(text);
         this.close();
       } catch (err) {
-        new import_obsidian5.Notice(`Search failed: ${(_a = err == null ? void 0 : err.message) != null ? _a : err}`, 8e3);
+        new import_obsidian4.Notice(`Search failed: ${(_a = err == null ? void 0 : err.message) != null ? _a : err}`, 8e3);
         runBtn.disabled = false;
         runBtn.setText("Insert results");
       }
@@ -2821,7 +3106,7 @@ var KnowledgeSearchModal = class extends import_obsidian5.Modal {
     this.contentEl.empty();
   }
 };
-var HexagramModal = class extends import_obsidian5.Modal {
+var HexagramModal = class extends import_obsidian4.Modal {
   constructor(app, plugin, editor) {
     super(app);
     this.mode = "cast";
@@ -2918,22 +3203,22 @@ var HexagramModal = class extends import_obsidian5.Modal {
       cls: "moon-tab-intro",
       text: "Pick a hexagram by number (1\u201364) and optional changing lines."
     });
-    new import_obsidian5.Setting(wrap).setName("Hexagram number").addText((t) => t.setPlaceholder("1\u201364").setValue(String(this.manualNumber)).onChange((v) => {
+    new import_obsidian4.Setting(wrap).setName("Hexagram number").addText((t) => t.setPlaceholder("1\u201364").setValue(String(this.manualNumber)).onChange((v) => {
       const n = parseInt(v, 10);
       if (Number.isFinite(n) && n >= 1 && n <= 64)
         this.manualNumber = n;
     }));
-    new import_obsidian5.Setting(wrap).setName("Changing lines (comma-separated, 1\u20136)").addText((t) => t.setPlaceholder("e.g. 1,3,5").setValue(this.manualLines.join(",")).onChange((v) => {
+    new import_obsidian4.Setting(wrap).setName("Changing lines (comma-separated, 1\u20136)").addText((t) => t.setPlaceholder("e.g. 1,3,5").setValue(this.manualLines.join(",")).onChange((v) => {
       this.manualLines = v.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => n >= 1 && n <= 6);
     }));
-    new import_obsidian5.Setting(wrap).addButton((b) => b.setButtonText("Build hexagram").setCta().onClick(() => {
+    new import_obsidian4.Setting(wrap).addButton((b) => b.setButtonText("Build hexagram").setCta().onClick(() => {
       var _a;
       try {
         this.cast = manualHexagram(this.manualNumber, this.manualLines);
         this.bodyEl.empty();
         this.renderCast();
       } catch (err) {
-        new import_obsidian5.Notice(`Couldn't build: ${(_a = err == null ? void 0 : err.message) != null ? _a : err}`, 6e3);
+        new import_obsidian4.Notice(`Couldn't build: ${(_a = err == null ? void 0 : err.message) != null ? _a : err}`, 6e3);
       }
     }));
   }
@@ -2967,7 +3252,7 @@ var HexagramModal = class extends import_obsidian5.Modal {
     }
     const fullSection = this.bodyEl.createEl("details", { cls: "moon-hex-full" });
     fullSection.createEl("summary", {
-      text: `Full ${this.plugin.settings.oracle.hexagramSource} entry`
+      text: `Full ${HEXAGRAM_SOURCE} entry`
     });
     const fullBody = fullSection.createDiv({ cls: "moon-hex-full-body", text: "Loading\u2026" });
     fullSection.addEventListener("toggle", () => {
@@ -3066,7 +3351,7 @@ var HexagramModal = class extends import_obsidian5.Modal {
   async insert(format, btn) {
     var _a;
     if (!this.cast) {
-      new import_obsidian5.Notice("Nothing cast yet.");
+      new import_obsidian4.Notice("Nothing cast yet.");
       return;
     }
     btn.disabled = true;
@@ -3088,7 +3373,7 @@ ${text}`;
       this.editor.replaceSelection(text);
       this.close();
     } catch (err) {
-      new import_obsidian5.Notice(`Insert failed: ${(_a = err == null ? void 0 : err.message) != null ? _a : err}`, 8e3);
+      new import_obsidian4.Notice(`Insert failed: ${(_a = err == null ? void 0 : err.message) != null ? _a : err}`, 8e3);
       btn.disabled = false;
       btn.setText("Insert");
     }
@@ -3098,7 +3383,7 @@ ${text}`;
       return "";
     const sections = [formatCast(this.cast)];
     if (this.plugin.knowledge.isConfigured()) {
-      const source = this.plugin.settings.oracle.hexagramSource;
+      const source = HEXAGRAM_SOURCE;
       const primaryFull = await this.plugin.lookupHexagram(this.cast.primary.number);
       if (primaryFull) {
         sections.push("", `## ${source} \u2014 Hexagram ${this.cast.primary.number}`, "", primaryFull);
@@ -3119,10 +3404,11 @@ ${text}`;
     return sections.join("\n");
   }
   async buildLLMReading() {
+    var _a;
     if (!this.cast)
       return "";
     if (!this.plugin.llm.isConfigured()) {
-      new import_obsidian5.Notice("LLM not configured \u2014 falling back to full reading.", 5e3);
+      new import_obsidian4.Notice("LLM not configured \u2014 falling back to full reading.", 5e3);
       return this.buildFullReading();
     }
     const compact = formatCast(this.cast);
@@ -3136,8 +3422,9 @@ ${compact}
 
 ## Source material
 ${knowledge || "_(no chunks retrieved)_"}`;
+    const creds = this.plugin.settings.llm.providers[this.plugin.settings.llm.provider];
     return this.plugin.llm.complete({
-      model: this.plugin.settings.llm.model,
+      model: (_a = creds == null ? void 0 : creds.model) != null ? _a : "",
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userMsg }
@@ -3171,12 +3458,12 @@ ${rel}`);
   async saveToJournal(btn) {
     var _a;
     if (!this.cast) {
-      new import_obsidian5.Notice("Nothing cast yet.");
+      new import_obsidian4.Notice("Nothing cast yet.");
       return;
     }
     const folder = this.plugin.settings.oracle.journalFolder;
     if (!folder) {
-      new import_obsidian5.Notice("Set an oracle journal folder in Oracle settings first.");
+      new import_obsidian4.Notice("Set an oracle journal folder in Oracle settings first.");
       return;
     }
     if (btn) {
@@ -3197,16 +3484,42 @@ ${rel}`);
 ` : ""}${formatCast(this.cast)}`
       });
       if (btn) {
-        new import_obsidian5.Notice("Saved to journal.");
+        new import_obsidian4.Notice("Saved to journal.");
         btn.disabled = false;
         btn.setText("Save to journal");
       }
     } catch (err) {
-      new import_obsidian5.Notice(`Save failed: ${(_a = err == null ? void 0 : err.message) != null ? _a : err}`, 8e3);
+      new import_obsidian4.Notice(`Save failed: ${(_a = err == null ? void 0 : err.message) != null ? _a : err}`, 8e3);
       if (btn) {
         btn.disabled = false;
         btn.setText("Save to journal");
       }
     }
+  }
+};
+var FolderPickerModal = class extends import_obsidian4.FuzzySuggestModal {
+  constructor(app, onPick) {
+    super(app);
+    this.onPick = onPick;
+    this.setPlaceholder("Pick a folder\u2026");
+  }
+  getItems() {
+    const folders = ["/"];
+    const walk = (folder) => {
+      for (const child of folder.children) {
+        if (child instanceof import_obsidian4.TFolder) {
+          folders.push(child.path);
+          walk(child);
+        }
+      }
+    };
+    walk(this.app.vault.getRoot());
+    return folders;
+  }
+  getItemText(item) {
+    return item;
+  }
+  onChooseItem(item) {
+    void this.onPick(item === "/" ? "" : item);
   }
 };

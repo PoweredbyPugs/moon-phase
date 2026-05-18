@@ -1,11 +1,12 @@
 import {
-    App, Editor, Modal, Notice, Plugin, PluginSettingTab, Setting, requestUrl,
+    App, Editor, FuzzySuggestModal, Modal, Notice, Plugin, PluginSettingTab, Setting,
+    TFolder, requestUrl,
 } from 'obsidian';
 
 import {
     ASPECTS, AspectName, ASPECT_SYMBOLS,
-    AspectsResponse, ChartsListResponse, CycleResponse, GenerateChartBody, MoonData,
-    MoonPluginSettings, NatalTransitsResponse, PlanetName, PlanetsResponse,
+    AspectsResponse, ChartsListResponse, CustomCommand, CycleResponse, GenerateChartBody, HEXAGRAM_SOURCE,
+    MoonData, MoonPluginSettings, NatalTransitsResponse, PlanetName, PlanetsResponse,
     PLANETS, SkyAspect,
 } from './src/types';
 
@@ -31,8 +32,7 @@ import { Neo4jKnowledgeBackend } from './src/knowledge/neo4j';
 import { parsePlacement } from './src/knowledge/parse';
 
 import { LLMProvider, NullLLMProvider } from './src/synthesis/provider';
-import { OpenAIProvider } from './src/synthesis/providers/openai';
-import { AnthropicProvider } from './src/synthesis/providers/anthropic';
+import { PROVIDERS, ProviderId, RegistryLLMProvider } from './src/synthesis/registry';
 import {
     synthesizeChartReading, synthesizeDiscover, synthesizePlacement,
 } from './src/synthesis/synthesize';
@@ -42,10 +42,21 @@ import { saveMemoryRecord } from './src/synthesis/memory';
  * Plugin
  * ──────────────────────────────────────────────────────────────────────── */
 
+/* Runtime registry of commands — populated by regCmd() during onload.
+ * Powers the Commands settings tab and the custom-command runner. */
+interface RegisteredCommand {
+    id: string;
+    name: string;
+    group: string;
+    runner: (editor: Editor) => string | Promise<string>;
+    registered: boolean;
+}
+
 export default class MoonPlugin extends Plugin {
     settings!: MoonPluginSettings;
     knowledge: KnowledgeBackend = new NullKnowledgeBackend();
     llm: LLMProvider = new NullLLMProvider();
+    commandRegistry: RegisteredCommand[] = [];
 
     public api = {
         getMoonData: this.getMoonData.bind(this),
@@ -91,76 +102,48 @@ export default class MoonPlugin extends Plugin {
         (window as any).MoonPhasePlugin = this.api;
 
         /* ── Phase / Moon ── */
-        this.addCommand({
-            id: 'current-moon-phase',
-            name: 'Current Moon Phase',
-            editorCallback: (editor: Editor) => {
-                this.getCurrentMoonPhase().then(s => editor.replaceSelection(s));
-            },
-        });
+        this.addToggleable('current-moon-phase', 'Current Moon Phase', 'Moon',
+            (editor) => { this.getCurrentMoonPhase().then(s => editor.replaceSelection(s)); });
 
-        this.addCommand({
-            id: 'current-moon-degree',
-            name: 'Current Moon Degree',
-            editorCallback: (editor: Editor) => {
-                this.getCurrentMoonDegree().then(s => editor.replaceSelection(s));
-            },
-        });
+        this.addToggleable('current-moon-degree', 'Current Moon Degree', 'Moon',
+            (editor) => { this.getCurrentMoonDegree().then(s => editor.replaceSelection(s)); });
 
-        this.addCommand({
-            id: 'weekly-phase',
-            name: 'Weekly Phase',
-            editorCallback: (editor: Editor) => {
-                this.getWeeklyPhase().then(s => editor.replaceSelection(s));
-            },
-        });
+        this.addToggleable('weekly-phase', 'Weekly Phase', 'Moon',
+            (editor) => { this.getWeeklyPhase().then(s => editor.replaceSelection(s)); });
 
         /* ── Planet positions ── */
-        this.addCommand({
-            id: 'planetary-positions',
-            name: 'All Planetary Positions',
-            editorCallback: (editor: Editor) => {
-                this.getPlanetaryData().then(data => {
-                    editor.replaceSelection(data.planets.map(formatPlanetLine).join('\n'));
-                }).catch(err => this.handleError(editor, 'planetary data', err));
-            },
+        this.addToggleable('planetary-positions', 'All Planetary Positions', 'Planets', (editor) => {
+            this.getPlanetaryData().then(data => {
+                editor.replaceSelection(data.planets.map(formatPlanetLine).join('\n'));
+            }).catch(err => this.handleError(editor, 'planetary data', err));
         });
 
         for (const planetName of PLANETS) {
-            this.addCommand({
-                id: `${planetName.toLowerCase()}-position`,
-                name: `${planetName} Position`,
-                editorCallback: (editor: Editor) => {
+            this.addToggleable(`${planetName.toLowerCase()}-position`, `${planetName} Position`, 'Planets',
+                (editor) => {
                     this.getPlanetaryData().then(data => {
                         const planet = data.planets.find(p => p.name === planetName);
                         editor.replaceSelection(planet
                             ? formatPlanetLine(planet)
                             : `Error: ${planetName} data not found`);
                     }).catch(err => this.handleError(editor, `${planetName} data`, err));
-                },
-            });
+                });
         }
 
         /* ── Aspects (natal-aware when a chart is selected) ── */
-        this.addCommand({
-            id: 'all-aspects',
-            name: 'All Current Aspects',
-            editorCallback: (editor: Editor) => {
-                this.getEffectiveAspects().then(aspects => {
-                    if (aspects.length === 0) {
-                        editor.replaceSelection('No significant aspects currently.');
-                        return;
-                    }
-                    editor.replaceSelection(aspects.map(formatSkyAspectLine).join('\n'));
-                }).catch(err => this.handleError(editor, 'aspects data', err));
-            },
+        this.addToggleable('all-aspects', 'All Current Aspects', 'Aspects', (editor) => {
+            this.getEffectiveAspects().then(aspects => {
+                if (aspects.length === 0) {
+                    editor.replaceSelection('No significant aspects currently.');
+                    return;
+                }
+                editor.replaceSelection(aspects.map(formatSkyAspectLine).join('\n'));
+            }).catch(err => this.handleError(editor, 'aspects data', err));
         });
 
         for (const planetName of PLANETS) {
-            this.addCommand({
-                id: `${planetName.toLowerCase()}-aspects`,
-                name: `${planetName} Aspects`,
-                editorCallback: (editor: Editor) => {
+            this.addToggleable(`${planetName.toLowerCase()}-aspects`, `${planetName} Aspects`, 'Aspects',
+                (editor) => {
                     this.getEffectiveAspects().then(aspects => {
                         const relevant = aspects.filter(a =>
                             a.planet1 === planetName || a.planet2 === planetName);
@@ -168,7 +151,6 @@ export default class MoonPlugin extends Plugin {
                             editor.replaceSelection(`No significant aspects for ${planetName} currently.`);
                             return;
                         }
-                        // Move the asked-for planet to the left for readability
                         const out = relevant.map(a => {
                             if (a.planet1 === planetName) return formatSkyAspectLine(a);
                             return formatSkyAspectLine({
@@ -183,15 +165,12 @@ export default class MoonPlugin extends Plugin {
                         }).join('\n');
                         editor.replaceSelection(out);
                     }).catch(err => this.handleError(editor, `${planetName} aspects`, err));
-                },
-            });
+                });
         }
 
         for (const aspectName of ['Conjunction', 'Opposition', 'Trine', 'Square', 'Sextile'] as AspectName[]) {
-            this.addCommand({
-                id: `${aspectName.toLowerCase()}-aspects`,
-                name: `${aspectName} Aspects`,
-                editorCallback: (editor: Editor) => {
+            this.addToggleable(`${aspectName.toLowerCase()}-aspects`, `${aspectName} Aspects`, 'Aspects',
+                (editor) => {
                     this.getEffectiveAspects().then(aspects => {
                         const relevant = aspects.filter(a => a.aspectName === aspectName);
                         if (relevant.length === 0) {
@@ -200,209 +179,139 @@ export default class MoonPlugin extends Plugin {
                         }
                         editor.replaceSelection(relevant.map(formatSkyAspectLine).join('\n'));
                     }).catch(err => this.handleError(editor, `${aspectName} aspects`, err));
-                },
-            });
+                });
         }
 
         /* ── Techniques (pure-TS + Helios-backed) ── */
 
-        this.addCommand({
-            id: 'cast-hexagram',
-            name: 'Cast Hexagram (insert at cursor)',
-            editorCallback: (editor: Editor) => {
-                if (!this.settings.techniques.hexagram) {
-                    new Notice('Enable "Hexagram" in the Techniques settings tab first.');
-                    return;
-                }
-                this.getDailyHexagram().then(text => editor.replaceSelection(text))
-                    .catch(err => this.handleError(editor, 'hexagram', err));
-            },
+        this.addToggleable('cast-hexagram', 'Cast Hexagram (insert at cursor)', 'Oracle', (editor) => {
+            if (!this.settings.techniques.hexagram) {
+                new Notice('Enable "Hexagram" in the Techniques settings tab first.'); return;
+            }
+            this.getDailyHexagram().then(text => editor.replaceSelection(text))
+                .catch(err => this.handleError(editor, 'hexagram', err));
         });
 
-        this.addCommand({
-            id: 'open-hexagram-modal',
-            name: 'Hexagram Oracle (modal — cast / manual / day)',
-            editorCallback: (editor: Editor) => {
-                if (!this.settings.techniques.hexagram) {
-                    new Notice('Enable "Hexagram" in the Techniques settings tab first.');
-                    return;
-                }
-                new HexagramModal(this.app, this, editor).open();
-            },
+        this.addToggleable('open-hexagram-modal', 'Hexagram Oracle (modal — cast / manual / day)', 'Oracle', (editor) => {
+            if (!this.settings.techniques.hexagram) {
+                new Notice('Enable "Hexagram" in the Techniques settings tab first.'); return;
+            }
+            new HexagramModal(this.app, this, editor).open();
         });
 
-        this.addCommand({
-            id: 'todays-ki',
-            name: "Today's 9 Star Ki",
-            editorCallback: (editor: Editor) => {
-                if (!this.settings.techniques.ki) {
-                    new Notice('Enable "Ki" in the Techniques settings tab first.');
-                    return;
-                }
-                editor.replaceSelection(this.getTodaysKi());
-            },
+        this.addToggleable('todays-ki', "Today's 9 Star Ki", 'Techniques', (editor) => {
+            if (!this.settings.techniques.ki) {
+                new Notice('Enable "Ki" in the Techniques settings tab first.'); return;
+            }
+            editor.replaceSelection(this.getTodaysKi());
         });
 
-        this.addCommand({
-            id: 'natal-ki',
-            name: 'Natal 9 Star Ki (selected chart / birth date)',
-            editorCallback: (editor: Editor) => {
-                if (!this.settings.techniques.ki) {
-                    new Notice('Enable "Ki" in the Techniques settings tab first.');
-                    return;
-                }
-                this.getNatalKi().then(text => editor.replaceSelection(text))
-                    .catch(err => this.handleError(editor, 'natal Ki', err));
-            },
+        this.addToggleable('natal-ki', 'Natal 9 Star Ki (selected chart / birth date)', 'Techniques', (editor) => {
+            if (!this.settings.techniques.ki) {
+                new Notice('Enable "Ki" in the Techniques settings tab first.'); return;
+            }
+            this.getNatalKi().then(text => editor.replaceSelection(text))
+                .catch(err => this.handleError(editor, 'natal Ki', err));
         });
 
-        this.addCommand({
-            id: 'midpoint-transits',
-            name: 'Midpoint Transits (selected chart)',
-            editorCallback: (editor: Editor) => {
-                if (!this.settings.techniques.midpoints) {
-                    new Notice('Enable "Midpoints" in the Techniques settings tab first.');
-                    return;
-                }
-                this.getMidpointTransits().then(text => editor.replaceSelection(text))
-                    .catch(err => this.handleError(editor, 'midpoint transits', err));
-            },
+        this.addToggleable('midpoint-transits', 'Midpoint Transits (selected chart)', 'Techniques', (editor) => {
+            if (!this.settings.techniques.midpoints) {
+                new Notice('Enable "Midpoints" in the Techniques settings tab first.'); return;
+            }
+            this.getMidpointTransits().then(text => editor.replaceSelection(text))
+                .catch(err => this.handleError(editor, 'midpoint transits', err));
         });
 
-        this.addCommand({
-            id: 'next-eclipse',
-            name: 'Next Eclipse',
-            editorCallback: (editor: Editor) => {
-                if (!this.settings.techniques.eclipses) {
-                    new Notice('Enable "Eclipses" in the Techniques settings tab first.');
-                    return;
-                }
-                this.getNextEclipse().then(text => editor.replaceSelection(text))
-                    .catch(err => this.handleError(editor, 'next eclipse', err));
-            },
+        this.addToggleable('next-eclipse', 'Next Eclipse', 'Techniques', (editor) => {
+            if (!this.settings.techniques.eclipses) {
+                new Notice('Enable "Eclipses" in the Techniques settings tab first.'); return;
+            }
+            this.getNextEclipse().then(text => editor.replaceSelection(text))
+                .catch(err => this.handleError(editor, 'next eclipse', err));
         });
 
-        this.addCommand({
-            id: 'dashas',
-            name: 'Vimshottari Dashas (selected chart)',
-            editorCallback: (editor: Editor) => {
-                if (!this.settings.techniques.dashas) {
-                    new Notice('Enable "Dashas" in the Techniques settings tab first.');
-                    return;
-                }
-                this.getDashas().then(text => editor.replaceSelection(text))
-                    .catch(err => this.handleError(editor, 'dashas', err));
-            },
+        this.addToggleable('dashas', 'Vimshottari Dashas (selected chart)', 'Techniques', (editor) => {
+            if (!this.settings.techniques.dashas) {
+                new Notice('Enable "Dashas" in the Techniques settings tab first.'); return;
+            }
+            this.getDashas().then(text => editor.replaceSelection(text))
+                .catch(err => this.handleError(editor, 'dashas', err));
         });
 
-        this.addCommand({
-            id: 'plot-cycle',
-            name: 'Plot Planetary Cycle (modal)',
-            editorCallback: (editor: Editor) => {
-                new CycleModal(this.app, this, editor).open();
-            },
+        this.addToggleable('plot-cycle', 'Plot Planetary Cycle (modal)', 'Cycles', (editor) => {
+            new CycleModal(this.app, this, editor).open();
         });
 
         /* ── Knowledge layer ── */
 
-        this.addCommand({
-            id: 'knowledge-search',
-            name: 'Knowledge Search',
-            editorCallback: (editor: Editor) => {
-                if (!this.knowledge.isConfigured()) {
-                    new Notice('Configure a knowledge backend in settings first.');
-                    return;
-                }
-                new KnowledgeSearchModal(this.app, this, editor).open();
-            },
+        this.addToggleable('knowledge-search', 'Knowledge Search', 'Knowledge', (editor) => {
+            if (!this.knowledge.isConfigured()) {
+                new Notice('Configure a knowledge backend in settings first.'); return;
+            }
+            new KnowledgeSearchModal(this.app, this, editor).open();
         });
 
-        this.addCommand({
-            id: 'interpret-selection',
-            name: 'Interpret Selected Placement (knowledge only)',
-            editorCallback: (editor: Editor) => {
-                const selection = editor.getSelection().trim() || editor.getLine(editor.getCursor().line).trim();
-                if (!selection) {
-                    new Notice('Select a placement first (e.g. "Mars Capricorn 15˚" or "♂ ♑").');
-                    return;
-                }
-                this.interpretPlacement(selection)
-                    .then(text => editor.replaceSelection(text))
-                    .catch(err => this.handleError(editor, 'interpretation', err));
-            },
+        this.addToggleable('interpret-selection', 'Interpret Selected Placement (knowledge only)', 'Knowledge', (editor) => {
+            const selection = editor.getSelection().trim() || editor.getLine(editor.getCursor().line).trim();
+            if (!selection) {
+                new Notice('Select a placement first (e.g. "Mars Capricorn 15˚" or "♂ ♑").'); return;
+            }
+            this.interpretPlacement(selection)
+                .then(text => editor.replaceSelection(text))
+                .catch(err => this.handleError(editor, 'interpretation', err));
         });
 
         /* ── Synthesis (LLM-grounded readings) ── */
 
-        this.addCommand({
-            id: 'chart-reading',
-            name: 'Insert Chart Reading (LLM)',
-            editorCallback: (editor: Editor) => {
-                if (!this.settings.defaultChart) {
-                    new Notice('Pick a default chart in Natal Chart settings first.');
-                    return;
-                }
-                if (!this.llm.isConfigured()) {
-                    new Notice('Configure an LLM provider in the LLM settings tab first.');
-                    return;
-                }
-                const file = this.app.workspace.getActiveFile();
-                this.chartReading(this.settings.defaultChart, file?.path)
-                    .then(text => editor.replaceSelection(text))
-                    .catch(err => this.handleError(editor, 'chart reading', err));
-            },
+        this.addToggleable('chart-reading', 'Insert Chart Reading (LLM)', 'Synthesis', (editor) => {
+            if (!this.settings.defaultChart) {
+                new Notice('Pick a default chart in Natal Chart settings first.'); return;
+            }
+            if (!this.llm.isConfigured()) {
+                new Notice('Configure an LLM provider in the LLM settings tab first.'); return;
+            }
+            const file = this.app.workspace.getActiveFile();
+            this.chartReading(this.settings.defaultChart, file?.path)
+                .then(text => editor.replaceSelection(text))
+                .catch(err => this.handleError(editor, 'chart reading', err));
         });
 
-        this.addCommand({
-            id: 'discover-patterns',
-            name: 'Discover Patterns for Default Chart (LLM)',
-            editorCallback: (editor: Editor) => {
-                if (!this.settings.defaultChart) {
-                    new Notice('Pick a default chart in Natal Chart settings first.');
-                    return;
-                }
-                if (!this.llm.isConfigured()) {
-                    new Notice('Configure an LLM provider in the LLM settings tab first.');
-                    return;
-                }
-                const file = this.app.workspace.getActiveFile();
-                this.discoverPatterns(this.settings.defaultChart, file?.path)
-                    .then(text => editor.replaceSelection(text))
-                    .catch(err => this.handleError(editor, 'discover', err));
-            },
+        this.addToggleable('discover-patterns', 'Discover Patterns for Default Chart (LLM)', 'Synthesis', (editor) => {
+            if (!this.settings.defaultChart) {
+                new Notice('Pick a default chart in Natal Chart settings first.'); return;
+            }
+            if (!this.llm.isConfigured()) {
+                new Notice('Configure an LLM provider in the LLM settings tab first.'); return;
+            }
+            const file = this.app.workspace.getActiveFile();
+            this.discoverPatterns(this.settings.defaultChart, file?.path)
+                .then(text => editor.replaceSelection(text))
+                .catch(err => this.handleError(editor, 'discover', err));
         });
 
-        this.addCommand({
-            id: 'interpret-selection-llm',
-            name: 'Interpret Selected Placement (LLM + knowledge)',
-            editorCallback: (editor: Editor) => {
-                const selection = editor.getSelection().trim() || editor.getLine(editor.getCursor().line).trim();
-                if (!selection) {
-                    new Notice('Select a placement first.');
-                    return;
-                }
-                if (!this.llm.isConfigured()) {
-                    new Notice('Configure an LLM provider in the LLM settings tab first.');
-                    return;
-                }
-                const file = this.app.workspace.getActiveFile();
-                this.interpretPlacementLLM(selection, file?.path)
-                    .then(text => editor.replaceSelection(text))
-                    .catch(err => this.handleError(editor, 'LLM interpretation', err));
-            },
+        this.addToggleable('interpret-selection-llm', 'Interpret Selected Placement (LLM + knowledge)', 'Synthesis', (editor) => {
+            const selection = editor.getSelection().trim() || editor.getLine(editor.getCursor().line).trim();
+            if (!selection) {
+                new Notice('Select a placement first.'); return;
+            }
+            if (!this.llm.isConfigured()) {
+                new Notice('Configure an LLM provider in the LLM settings tab first.'); return;
+            }
+            const file = this.app.workspace.getActiveFile();
+            this.interpretPlacementLLM(selection, file?.path)
+                .then(text => editor.replaceSelection(text))
+                .catch(err => this.handleError(editor, 'LLM interpretation', err));
         });
 
-        this.addCommand({
-            id: 'cycle-crossings-default',
-            name: 'Cycle Crossings to Default Chart (next 6 months)',
-            editorCallback: (editor: Editor) => {
-                if (!this.settings.defaultChart) {
-                    new Notice('Pick a default chart in Natal Chart settings first.');
-                    return;
-                }
-                new CycleModal(this.app, this, editor, { quickCrossings: true }).open();
-            },
+        this.addToggleable('cycle-crossings-default', 'Cycle Crossings to Default Chart (next 6 months)', 'Cycles', (editor) => {
+            if (!this.settings.defaultChart) {
+                new Notice('Pick a default chart in Natal Chart settings first.'); return;
+            }
+            new CycleModal(this.app, this, editor, { quickCrossings: true }).open();
         });
+
+        // Custom composite commands defined by the user
+        this.registerCustomCommands();
     }
 
     onunload() {
@@ -418,18 +327,63 @@ export default class MoonPlugin extends Plugin {
     /** Rebuild the LLM provider from current settings. */
     rebuildLLMProvider() {
         const ls = this.settings.llm;
-        switch (ls.provider) {
-            case 'openai':
-                this.llm = new OpenAIProvider({ baseUrl: ls.openaiBaseUrl, apiKey: ls.openaiApiKey });
-                break;
-            case 'ollama':
-                this.llm = new OpenAIProvider({ baseUrl: ls.ollamaBaseUrl, apiKey: '' });
-                break;
-            case 'anthropic':
-                this.llm = new AnthropicProvider({ baseUrl: ls.anthropicBaseUrl, apiKey: ls.anthropicApiKey });
-                break;
-            default:
-                this.llm = new NullLLMProvider();
+        if (ls.provider === 'off') {
+            this.llm = new NullLLMProvider();
+            return;
+        }
+        const def = PROVIDERS[ls.provider as Exclude<ProviderId, 'off'>];
+        const creds = ls.providers[ls.provider] ?? { apiKey: '', baseUrl: def.defaultBaseUrl, model: '' };
+        this.llm = new RegistryLLMProvider(def, creds);
+    }
+
+    /** Register a built-in command via this helper instead of `this.addCommand`
+     * directly. Tracks the command in `commandRegistry` so the Commands tab
+     * can list it; respects `settings.disabledCommands` to skip registration
+     * for ones the user has turned off (takes effect on next reload). */
+    private addToggleable(id: string, name: string, group: string,
+                          editorCallback: (editor: Editor) => void) {
+        const disabled = this.settings.disabledCommands.includes(id);
+        this.commandRegistry.push({
+            id, name, group, registered: !disabled,
+            runner: (editor: Editor) => { editorCallback(editor); return ''; },
+        });
+        if (disabled) return;
+        this.addCommand({ id, name, editorCallback });
+    }
+
+    /** Register all user-defined custom commands at load time.
+     * A custom command runs its steps in sequence via the standard Obsidian
+     * command dispatch — each step inserts its own text at the cursor.
+     * Optional chartOverride temporarily swaps `settings.defaultChart` for
+     * the duration of the step. */
+    private registerCustomCommands() {
+        for (const cmd of this.settings.customCommands) {
+            const id = `custom-${cmd.id}`;
+            this.addCommand({
+                id,
+                name: `${cmd.name} (custom)`,
+                editorCallback: async (editor: Editor) => {
+                    const savedDefault = this.settings.defaultChart;
+                    try {
+                        for (const step of cmd.steps) {
+                            if (step.chartOverride) this.settings.defaultChart = step.chartOverride;
+                            else this.settings.defaultChart = savedDefault;
+                            const entry = this.commandRegistry.find(c => c.id === step.commandId);
+                            if (!entry || !entry.registered) {
+                                editor.replaceSelection(`_(skipped: ${step.commandId} not available)_\n\n`);
+                                continue;
+                            }
+                            await Promise.resolve(entry.runner(editor));
+                            // The runner already inserted at cursor via editor.replaceSelection;
+                            // insert a separator before the next step
+                            const sep = cmd.separator || '\n\n';
+                            if (sep) editor.replaceSelection(sep);
+                        }
+                    } finally {
+                        this.settings.defaultChart = savedDefault;
+                    }
+                },
+            });
         }
     }
 
@@ -563,11 +517,11 @@ export default class MoonPlugin extends Plugin {
     async getDailyHexagram(): Promise<string> {
         const cast = castHexagram();
         const base = formatCast(cast);
-        if (!this.knowledge.isConfigured() || !this.settings.oracle.hexagramSource) {
+        if (!this.knowledge.isConfigured() || !HEXAGRAM_SOURCE) {
             return base;
         }
         try {
-            const sourceTitle = this.settings.oracle.hexagramSource;
+            const sourceTitle = HEXAGRAM_SOURCE;
             const primary = await this.lookupHexagramText(cast.primary.number, cast.primary.name, sourceTitle);
             const relating = cast.relating
                 ? await this.lookupHexagramText(cast.relating.number, cast.relating.name, sourceTitle)
@@ -596,7 +550,7 @@ export default class MoonPlugin extends Plugin {
     async lookupHexagram(number: number, line?: number): Promise<string> {
         if (!this.knowledge.isConfigured()) return '';
         const info = getHexagram(number);
-        const sourceTitle = this.settings.oracle.hexagramSource;
+        const sourceTitle = HEXAGRAM_SOURCE;
         const chunks = await this.knowledge.search({
             query: hexagramLineQuery(number, info.name, line),
             tradition: 'iching',
@@ -697,10 +651,11 @@ export default class MoonPlugin extends Plugin {
     /* ── Synthesis (LLM + knowledge) ── */
 
     private synthDeps() {
+        const creds = this.settings.llm.providers[this.settings.llm.provider];
         return {
             knowledge: this.knowledge,
             llm: this.llm,
-            model: this.settings.llm.model,
+            model: creds?.model ?? '',
             maxTokens: this.settings.llm.maxTokens,
             temperature: this.settings.llm.temperature,
             knowledgeLimit: this.settings.llm.knowledgeLimit,
@@ -842,7 +797,7 @@ export default class MoonPlugin extends Plugin {
  * Settings UI — tabbed, follows the Periodic Ritual pattern
  * ──────────────────────────────────────────────────────────────────────── */
 
-type TabId = 'general' | 'chart' | 'planets' | 'aspects' | 'techniques' | 'oracle' | 'knowledge' | 'llm';
+type TabId = 'general' | 'chart' | 'planets' | 'aspects' | 'techniques' | 'oracle' | 'knowledge' | 'llm' | 'commands';
 
 interface NominatimResult {
     display_name: string;
@@ -884,6 +839,7 @@ class MoonSettingTab extends PluginSettingTab {
             { id: 'oracle', label: 'Oracle' },
             { id: 'knowledge', label: 'Knowledge' },
             { id: 'llm', label: 'LLM' },
+            { id: 'commands', label: 'Commands' },
         ];
 
         const bar = containerEl.createDiv({ cls: 'moon-tab-bar' });
@@ -908,21 +864,40 @@ class MoonSettingTab extends PluginSettingTab {
             case 'oracle':     this.renderOracle(body); break;
             case 'knowledge':  this.renderKnowledge(body); break;
             case 'llm':        this.renderLLM(body); break;
+            case 'commands':   this.renderCommands(body); break;
         }
     }
 
     /* ── General ── */
     private renderGeneral(c: HTMLElement) {
+        /* ── Server callout (top of General) ── */
+        const callout = c.createDiv({ cls: 'moon-callout' });
+        const inner = callout.createDiv();
+        inner.createEl('strong', { text: 'Required: a running Astrology Server' });
+        const p = callout.createEl('p');
+        p.innerHTML =
+            'Obsidian Moon is a thin client. All ephemeris + chart math happens on a small Node service — <a href="https://github.com/PoweredbyPugs/Astrology-Server" target="_blank">PoweredbyPugs/Astrology-Server</a>. Clone, <code>docker compose up -d --build</code>, then point the Server URL below at it.';
+        const calloutBtn = callout.createEl('a', {
+            text: '↗ Open Astrology Server on GitHub',
+            cls: 'moon-callout-btn',
+            attr: { href: 'https://github.com/PoweredbyPugs/Astrology-Server', target: '_blank' },
+        });
+        calloutBtn.addEventListener('click', (e) => { e.stopPropagation(); });
+
         new Setting(c)
             .setName('Server URL')
-            .setDesc('URL to your Sweph Astrological API server (e.g. http://baratie:3000).')
+            .setDesc('Where the Astrology Server is reachable (e.g. http://baratie:3000 on the tailnet, or http://localhost:3000 locally).')
             .addText(text => text
                 .setPlaceholder('http://localhost:3000')
                 .setValue(this.plugin.settings.serverUrl)
                 .onChange(async (value) => {
                     this.plugin.settings.serverUrl = normalizeBaseUrl(value);
                     await this.plugin.saveSettings();
-                }));
+                }))
+            .addExtraButton(btn => btn
+                .setIcon('github')
+                .setTooltip('Open Astrology Server on GitHub')
+                .onClick(() => window.open('https://github.com/PoweredbyPugs/Astrology-Server', '_blank')));
 
         const testWrap = c.createDiv({ cls: 'moon-test-wrap' });
         new Setting(testWrap)
@@ -1311,7 +1286,7 @@ class MoonSettingTab extends PluginSettingTab {
 
         new Setting(c)
             .setName('Midpoints')
-            .setDesc('Current transits aspecting natal midpoints. Requires Sweph-server endpoint /midpoint-transits/:name.')
+            .setDesc('Current transits aspecting natal midpoints (90-degree dial / cosmobiology).')
             .addToggle(t => t
                 .setValue(this.plugin.settings.techniques.midpoints)
                 .onChange(async (v) => {
@@ -1333,7 +1308,7 @@ class MoonSettingTab extends PluginSettingTab {
 
         new Setting(c)
             .setName('Eclipses')
-            .setDesc('"Next Eclipse" command. Requires Sweph-server endpoint /eclipses.')
+            .setDesc('Solar and lunar eclipses, with sign + degree.')
             .addToggle(t => t
                 .setValue(this.plugin.settings.techniques.eclipses)
                 .onChange(async (v) => {
@@ -1355,7 +1330,7 @@ class MoonSettingTab extends PluginSettingTab {
 
         new Setting(c)
             .setName('Vimshottari Dashas')
-            .setDesc('Vedic dasha periods for a saved chart. Requires Sweph-server endpoint /dashas/:name.')
+            .setDesc('Vedic Vimshottari dasha periods for a saved chart, derived from the natal Moon\'s nakshatra.')
             .addToggle(t => t
                 .setValue(this.plugin.settings.techniques.dashas)
                 .onChange(async (v) => {
@@ -1373,16 +1348,9 @@ class MoonSettingTab extends PluginSettingTab {
 
         c.createEl('h3', { text: 'I Ching' });
 
-        new Setting(c)
-            .setName('Interpretation source')
-            .setDesc('Source title (substring match) used when looking up hexagram and line interpretations in the knowledge graph. Default: "Gnostic Book of Changes". Filtered by tradition = "iching".')
-            .addText(t => t
-                .setPlaceholder('Gnostic Book of Changes')
-                .setValue(this.plugin.settings.oracle.hexagramSource)
-                .onChange(async (v) => {
-                    this.plugin.settings.oracle.hexagramSource = v.trim();
-                    await this.plugin.saveSettings();
-                }));
+        const sourceCallout = c.createEl('p', { cls: 'moon-tab-intro' });
+        sourceCallout.innerHTML =
+            `Interpretations come from <strong>The Gnostic Book of Changes</strong> by James DeKorne (Michael Servetus, public-domain — <a href="https://www.jamesdekorne.com/GBCh/GBC.htm" target="_blank">jamesdekorne.com</a>). The corpus must already be ingested into your knowledge graph for line-by-line drill-down to work.`;
 
         new Setting(c)
             .setName('"From the day" method')
@@ -1397,16 +1365,10 @@ class MoonSettingTab extends PluginSettingTab {
                 });
             });
 
-        new Setting(c)
-            .setName('Journal folder')
-            .setDesc('Vault folder where oracle casts are saved when you click "Save to journal" in the modal.')
-            .addText(t => t
-                .setPlaceholder('ObsidianMoon/oracle')
-                .setValue(this.plugin.settings.oracle.journalFolder)
-                .onChange(async (v) => {
-                    this.plugin.settings.oracle.journalFolder = v.trim();
-                    await this.plugin.saveSettings();
-                }));
+        this.addFolderSetting(c, 'Journal folder',
+            'Vault folder where oracle casts are saved when you click "Save to journal" in the modal.',
+            this.plugin.settings.oracle.journalFolder,
+            async (v) => { this.plugin.settings.oracle.journalFolder = v; await this.plugin.saveSettings(); });
 
         new Setting(c)
             .setName('Autosave every cast')
@@ -1546,16 +1508,16 @@ class MoonSettingTab extends PluginSettingTab {
     private renderLLM(c: HTMLElement) {
         c.createEl('p', {
             cls: 'moon-tab-intro',
-            text: 'Pick an LLM provider for the synthesis commands (Insert Chart Reading, Discover Patterns, Interpret with LLM). The plugin uses your provider directly — Obsidian Moon never sees your API keys. Generated readings are also saved to a vault folder so you can refer back to them.',
+            text: 'LLM provider for synthesis commands (Insert Chart Reading, Discover Patterns, Interpret with LLM, modal-mode LLM-synthesized hexagram readings). The plugin calls the provider directly using your credentials. Per-provider creds are kept separate so switching doesn\'t blow them away.',
         });
 
         new Setting(c)
             .setName('Provider')
             .addDropdown(dd => {
                 dd.addOption('off', 'Off');
-                dd.addOption('openai', 'OpenAI (or OpenAI-compatible)');
-                dd.addOption('anthropic', 'Anthropic Claude');
-                dd.addOption('ollama', 'Ollama (local)');
+                for (const def of Object.values(PROVIDERS)) {
+                    dd.addOption(def.id, def.label);
+                }
                 dd.setValue(this.plugin.settings.llm.provider);
                 dd.onChange(async (v) => {
                     this.plugin.settings.llm.provider = v as any;
@@ -1565,102 +1527,253 @@ class MoonSettingTab extends PluginSettingTab {
                 });
             });
 
-        const provider = this.plugin.settings.llm.provider;
+        const providerId = this.plugin.settings.llm.provider;
+        if (providerId === 'off') return;
+
+        const def = PROVIDERS[providerId as Exclude<ProviderId, 'off'>];
+        const creds = this.plugin.settings.llm.providers[providerId]
+            ?? { apiKey: '', baseUrl: def.defaultBaseUrl, model: '' };
+        // Ensure the slot exists in settings so onChange writes land somewhere
+        this.plugin.settings.llm.providers[providerId] = creds;
 
         new Setting(c)
-            .setName('Model')
-            .setDesc('Model name as the provider expects it (e.g. gpt-4o-mini, claude-sonnet-4-6, llama3.1:8b).')
+            .setName('Base URL')
+            .setDesc(`Default: ${def.defaultBaseUrl}. Override only if you're using a proxy or a self-hosted variant.`)
             .addText(t => t
-                .setPlaceholder('claude-sonnet-4-6')
-                .setValue(this.plugin.settings.llm.model)
+                .setPlaceholder(def.defaultBaseUrl)
+                .setValue(creds.baseUrl)
                 .onChange(async (v) => {
-                    this.plugin.settings.llm.model = v.trim();
+                    creds.baseUrl = v.trim();
+                    await this.plugin.saveSettings();
+                    this.plugin.rebuildLLMProvider();
+                }));
+
+        new Setting(c)
+            .setName(providerId === 'openclaw' ? 'Agent (model field)' : 'Model')
+            .setDesc(providerId === 'openclaw'
+                ? 'OpenClaw routes to an agent via the OpenAI-compatible model field. e.g. openclaw/default, openclaw/main, openclaw/<agent-id>.'
+                : 'Provider-specific model identifier. e.g. gpt-4o-mini, claude-sonnet-4-6, anthropic/claude-sonnet-4.5, gemini-2.5-pro, llama3.1:8b.')
+            .addText(t => t
+                .setPlaceholder(def.id === 'openclaw' ? 'openclaw/default' : 'model id')
+                .setValue(creds.model)
+                .onChange(async (v) => {
+                    creds.model = v.trim();
                     await this.plugin.saveSettings();
                 }));
 
-        if (provider === 'openai') {
-            new Setting(c).setName('OpenAI base URL').addText(t => t
-                .setPlaceholder('https://api.openai.com')
-                .setValue(this.plugin.settings.llm.openaiBaseUrl)
-                .onChange(async (v) => {
-                    this.plugin.settings.llm.openaiBaseUrl = v.trim();
-                    await this.plugin.saveSettings();
-                    this.plugin.rebuildLLMProvider();
-                }));
-            new Setting(c).setName('OpenAI API key').addText(t => {
+        new Setting(c)
+            .setName('API key')
+            .setDesc(def.needsKey
+                ? 'Required. Stored in plain text in data.json — keep that file out of git.'
+                : 'Optional for this provider (local gateway). Set only if your deployment requires Bearer auth.')
+            .addText(t => {
                 t.inputEl.type = 'password';
-                t.setValue(this.plugin.settings.llm.openaiApiKey).onChange(async (v) => {
-                    this.plugin.settings.llm.openaiApiKey = v;
-                    await this.plugin.saveSettings();
-                    this.plugin.rebuildLLMProvider();
-                });
-            });
-        } else if (provider === 'anthropic') {
-            new Setting(c).setName('Anthropic base URL').addText(t => t
-                .setPlaceholder('https://api.anthropic.com')
-                .setValue(this.plugin.settings.llm.anthropicBaseUrl)
-                .onChange(async (v) => {
-                    this.plugin.settings.llm.anthropicBaseUrl = v.trim();
-                    await this.plugin.saveSettings();
-                    this.plugin.rebuildLLMProvider();
-                }));
-            new Setting(c).setName('Anthropic API key').addText(t => {
-                t.inputEl.type = 'password';
-                t.setValue(this.plugin.settings.llm.anthropicApiKey).onChange(async (v) => {
-                    this.plugin.settings.llm.anthropicApiKey = v;
-                    await this.plugin.saveSettings();
-                    this.plugin.rebuildLLMProvider();
-                });
-            });
-        } else if (provider === 'ollama') {
-            new Setting(c).setName('Ollama base URL').setDesc('Local Ollama server, OpenAI-compatible API.')
-                .addText(t => t
-                    .setPlaceholder('http://localhost:11434')
-                    .setValue(this.plugin.settings.llm.ollamaBaseUrl)
+                t.setPlaceholder(def.needsKey ? 'required' : 'optional')
+                    .setValue(creds.apiKey)
                     .onChange(async (v) => {
-                        this.plugin.settings.llm.ollamaBaseUrl = v.trim();
+                        creds.apiKey = v;
                         await this.plugin.saveSettings();
                         this.plugin.rebuildLLMProvider();
-                    }));
+                    });
+            });
+
+        new Setting(c).setName('Max tokens').addSlider(s => s
+            .setLimits(256, 4096, 64)
+            .setValue(this.plugin.settings.llm.maxTokens)
+            .setDynamicTooltip()
+            .onChange(async (v) => {
+                this.plugin.settings.llm.maxTokens = v;
+                await this.plugin.saveSettings();
+            }));
+        new Setting(c).setName('Temperature').addSlider(s => s
+            .setLimits(0, 1.5, 0.05)
+            .setValue(this.plugin.settings.llm.temperature)
+            .setDynamicTooltip()
+            .onChange(async (v) => {
+                this.plugin.settings.llm.temperature = v;
+                await this.plugin.saveSettings();
+            }));
+        new Setting(c).setName('Knowledge chunks per synthesis')
+            .setDesc('How many knowledge graph chunks to retrieve and inline as context for each LLM call.')
+            .addSlider(s => s
+                .setLimits(0, 20, 1)
+                .setValue(this.plugin.settings.llm.knowledgeLimit)
+                .setDynamicTooltip()
+                .onChange(async (v) => {
+                    this.plugin.settings.llm.knowledgeLimit = v;
+                    await this.plugin.saveSettings();
+                }));
+        this.addFolderSetting(c, 'Memory folder',
+            'Vault folder where generated readings are saved with frontmatter for Dataview. Leave empty to disable memory.',
+            this.plugin.settings.llm.memoryFolder,
+            async (v) => { this.plugin.settings.llm.memoryFolder = v; await this.plugin.saveSettings(); });
+    }
+
+    /* ── Commands ── */
+    private renderCommands(c: HTMLElement) {
+        c.createEl('p', {
+            cls: 'moon-tab-intro',
+            text: 'All commands that Obsidian Moon registers. Disable any you do not want cluttering the palette — takes effect after reloading the plugin. Below, build "custom commands" that combine existing ones in sequence (e.g. Today\'s Moon + Today\'s Ki + Cast Hexagram, all inserted at the cursor with a separator between).',
+        });
+
+        /* ── Built-in commands grouped by category ── */
+        const grouped = new Map<string, RegisteredCommand[]>();
+        for (const cmd of this.plugin.commandRegistry) {
+            const list = grouped.get(cmd.group) ?? [];
+            list.push(cmd);
+            grouped.set(cmd.group, list);
         }
 
-        if (provider !== 'off') {
-            new Setting(c).setName('Max tokens').addSlider(s => s
-                .setLimits(256, 4096, 64)
-                .setValue(this.plugin.settings.llm.maxTokens)
-                .setDynamicTooltip()
-                .onChange(async (v) => {
-                    this.plugin.settings.llm.maxTokens = v;
-                    await this.plugin.saveSettings();
-                }));
-            new Setting(c).setName('Temperature').addSlider(s => s
-                .setLimits(0, 1.5, 0.05)
-                .setValue(this.plugin.settings.llm.temperature)
-                .setDynamicTooltip()
-                .onChange(async (v) => {
-                    this.plugin.settings.llm.temperature = v;
-                    await this.plugin.saveSettings();
-                }));
-            new Setting(c).setName('Knowledge chunks per synthesis')
-                .setDesc('How many knowledge graph chunks to retrieve and inline as context for each LLM call.')
-                .addSlider(s => s
-                    .setLimits(0, 20, 1)
-                    .setValue(this.plugin.settings.llm.knowledgeLimit)
-                    .setDynamicTooltip()
-                    .onChange(async (v) => {
-                        this.plugin.settings.llm.knowledgeLimit = v;
-                        await this.plugin.saveSettings();
-                    }));
-            new Setting(c).setName('Memory folder')
-                .setDesc('Vault folder where generated readings are saved (with frontmatter for Dataview). Leave empty to disable memory.')
-                .addText(t => t
-                    .setPlaceholder('ObsidianMoon/memory')
-                    .setValue(this.plugin.settings.llm.memoryFolder)
-                    .onChange(async (v) => {
-                        this.plugin.settings.llm.memoryFolder = v.trim();
-                        await this.plugin.saveSettings();
-                    }));
+        for (const [group, cmds] of grouped) {
+            c.createEl('h3', { text: group });
+            for (const cmd of cmds) {
+                new Setting(c)
+                    .setName(cmd.name)
+                    .setDesc(`id: ${cmd.id}`)
+                    .addToggle(t => t
+                        .setValue(cmd.registered)
+                        .onChange(async (v) => {
+                            const list = this.plugin.settings.disabledCommands;
+                            const i = list.indexOf(cmd.id);
+                            if (v && i >= 0) list.splice(i, 1);
+                            else if (!v && i < 0) list.push(cmd.id);
+                            await this.plugin.saveSettings();
+                            // Update the in-memory flag so the UI stays in sync;
+                            // actual register/unregister requires a plugin reload.
+                            cmd.registered = v;
+                            new Notice(`${v ? 'Enabled' : 'Disabled'} "${cmd.name}". Reload the plugin to take effect.`);
+                        }));
+            }
         }
+
+        /* ── Custom composite commands ── */
+        c.createEl('h3', { text: 'Custom commands' });
+        c.createEl('p', {
+            cls: 'moon-tab-intro',
+            text: 'Each custom command runs the listed steps in sequence. Each step inserts its output at the cursor; a separator goes between steps. Chart Override lets a step run against a chart other than your default (useful for relationship-style commands that pull from multiple charts).',
+        });
+
+        const customList = c.createDiv({ cls: 'moon-custom-cmd-list' });
+        const renderCustom = () => {
+            customList.empty();
+            const list = this.plugin.settings.customCommands;
+            if (list.length === 0) {
+                customList.createEl('p', {
+                    cls: 'moon-tab-intro',
+                    text: 'No custom commands yet. Click "Add custom command" below.',
+                });
+            }
+            list.forEach((cmd, idx) => this.renderCustomCommandCard(customList, cmd, idx, renderCustom));
+        };
+        renderCustom();
+
+        new Setting(c).addButton(b => b
+            .setButtonText('+ Add custom command')
+            .setCta()
+            .onClick(async () => {
+                const newCmd: CustomCommand = {
+                    id: `cmd-${Date.now().toString(36)}`,
+                    name: 'New custom command',
+                    separator: '\n\n',
+                    steps: [],
+                };
+                this.plugin.settings.customCommands.push(newCmd);
+                await this.plugin.saveSettings();
+                renderCustom();
+            }));
+    }
+
+    private renderCustomCommandCard(parent: HTMLElement, cmd: CustomCommand, idx: number, rerender: () => void) {
+        const card = parent.createDiv({ cls: 'moon-custom-cmd-card' });
+
+        const header = card.createDiv({ cls: 'moon-custom-cmd-header' });
+        const nameInput = header.createEl('input', { type: 'text', value: cmd.name }) as HTMLInputElement;
+        nameInput.placeholder = 'Custom command name';
+        nameInput.addEventListener('change', async () => {
+            cmd.name = nameInput.value.trim() || 'Custom command';
+            await this.plugin.saveSettings();
+        });
+        const delBtn = header.createEl('button', { text: '×', cls: 'moon-custom-cmd-delete' });
+        delBtn.title = 'Delete this custom command';
+        delBtn.addEventListener('click', async () => {
+            this.plugin.settings.customCommands.splice(idx, 1);
+            await this.plugin.saveSettings();
+            rerender();
+        });
+
+        new Setting(card)
+            .setName('Separator between steps')
+            .setDesc('Inserted at the cursor between each step. Use \\n\\n for a blank line.')
+            .addText(t => t
+                .setPlaceholder('\\n\\n')
+                .setValue(cmd.separator.replace(/\n/g, '\\n'))
+                .onChange(async (v) => {
+                    cmd.separator = v.replace(/\\n/g, '\n');
+                    await this.plugin.saveSettings();
+                }));
+
+        const stepsWrap = card.createDiv({ cls: 'moon-custom-cmd-steps' });
+        cmd.steps.forEach((step, i) => {
+            const stepCard = stepsWrap.createDiv({ cls: 'moon-custom-cmd-step' });
+            new Setting(stepCard)
+                .setName(`Step ${i + 1}`)
+                .addDropdown(dd => {
+                    dd.addOption('', '— pick a command —');
+                    for (const r of this.plugin.commandRegistry) {
+                        dd.addOption(r.id, `${r.group}: ${r.name}`);
+                    }
+                    dd.setValue(step.commandId);
+                    dd.onChange(async (v) => { step.commandId = v; await this.plugin.saveSettings(); });
+                })
+                .addDropdown(dd => {
+                    dd.addOption('', 'Use default chart');
+                    for (const cName of this.plugin.settings.trackedCharts) dd.addOption(cName, `→ ${cName}`);
+                    dd.setValue(step.chartOverride ?? '');
+                    dd.onChange(async (v) => {
+                        step.chartOverride = v || undefined;
+                        await this.plugin.saveSettings();
+                    });
+                })
+                .addExtraButton(b => b.setIcon('cross').setTooltip('Remove step').onClick(async () => {
+                    cmd.steps.splice(i, 1);
+                    await this.plugin.saveSettings();
+                    rerender();
+                }));
+        });
+
+        new Setting(card).addButton(b => b
+            .setButtonText('+ Add step')
+            .onClick(async () => {
+                cmd.steps.push({ commandId: '' });
+                await this.plugin.saveSettings();
+                rerender();
+            }));
+
+        card.createEl('p', {
+            cls: 'moon-tab-intro',
+            text: 'Registered as command id "custom-' + cmd.id + '". Reload the plugin after editing for changes to appear in the command palette.',
+        });
+    }
+
+    /* Folder-text-with-browse helper used by the Oracle and LLM tabs. */
+    private addFolderSetting(parent: HTMLElement, name: string, desc: string,
+                              currentValue: string, onSet: (v: string) => Promise<void>): Setting {
+        return new Setting(parent)
+            .setName(name)
+            .setDesc(desc)
+            .addText(t => t
+                .setPlaceholder('vault/path')
+                .setValue(currentValue)
+                .onChange(v => { void onSet(v.trim()); }))
+            .addExtraButton(btn => btn
+                .setIcon('folder')
+                .setTooltip('Browse vault folders')
+                .onClick(() => {
+                    new FolderPickerModal(this.plugin.app, async (path) => {
+                        await onSet(path);
+                        this.display();
+                    }).open();
+                }));
     }
 }
 
@@ -2048,7 +2161,7 @@ class HexagramModal extends Modal {
         /* ── Full DeKorne entry (collapsible) ── */
         const fullSection = this.bodyEl.createEl('details', { cls: 'moon-hex-full' });
         fullSection.createEl('summary', {
-            text: `Full ${this.plugin.settings.oracle.hexagramSource} entry`,
+            text: `Full ${HEXAGRAM_SOURCE} entry`,
         });
         const fullBody = fullSection.createDiv({ cls: 'moon-hex-full-body', text: 'Loading…' });
         fullSection.addEventListener('toggle', () => {
@@ -2164,7 +2277,7 @@ class HexagramModal extends Modal {
         if (!this.cast) return '';
         const sections: string[] = [formatCast(this.cast)];
         if (this.plugin.knowledge.isConfigured()) {
-            const source = this.plugin.settings.oracle.hexagramSource;
+            const source = HEXAGRAM_SOURCE;
             // Primary hexagram full text + each changing line's text
             const primaryFull = await this.plugin.lookupHexagram(this.cast.primary.number);
             if (primaryFull) {
@@ -2203,8 +2316,9 @@ ${compact}
 
 ## Source material
 ${knowledge || '_(no chunks retrieved)_'}`;
+        const creds = this.plugin.settings.llm.providers[this.plugin.settings.llm.provider];
         return this.plugin.llm.complete({
-            model: this.plugin.settings.llm.model,
+            model: creds?.model ?? '',
             messages: [
                 { role: 'system', content: systemPrompt },
                 { role: 'user', content: userMsg },
@@ -2251,5 +2365,38 @@ ${knowledge || '_(no chunks retrieved)_'}`;
             new Notice(`Save failed: ${err?.message ?? err}`, 8000);
             if (btn) { btn.disabled = false; btn.setText('Save to journal'); }
         }
+    }
+}
+
+/* ──────────────────────────────────────────────────────────────────────── *
+ * FolderPickerModal — FuzzySuggestModal over all vault folders
+ * ──────────────────────────────────────────────────────────────────────── */
+
+class FolderPickerModal extends FuzzySuggestModal<string> {
+    constructor(app: App, private onPick: (path: string) => void | Promise<void>) {
+        super(app);
+        this.setPlaceholder('Pick a folder…');
+    }
+
+    getItems(): string[] {
+        const folders: string[] = ['/'];
+        const walk = (folder: TFolder) => {
+            for (const child of folder.children) {
+                if (child instanceof TFolder) {
+                    folders.push(child.path);
+                    walk(child);
+                }
+            }
+        };
+        walk(this.app.vault.getRoot());
+        return folders;
+    }
+
+    getItemText(item: string): string {
+        return item;
+    }
+
+    onChooseItem(item: string): void {
+        void this.onPick(item === '/' ? '' : item);
     }
 }
