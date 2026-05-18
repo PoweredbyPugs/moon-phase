@@ -1,16 +1,16 @@
 import {
-    App, Editor, Notice, Plugin, PluginSettingTab, Setting, requestUrl,
+    App, Editor, Modal, Notice, Plugin, PluginSettingTab, Setting, requestUrl,
 } from 'obsidian';
 
 import {
     ASPECTS, AspectName, ASPECT_SYMBOLS,
-    AspectsResponse, ChartsListResponse, GenerateChartBody, MoonData,
+    AspectsResponse, ChartsListResponse, CycleResponse, GenerateChartBody, MoonData,
     MoonPluginSettings, NatalTransitsResponse, PlanetName, PlanetsResponse,
     PLANETS, SkyAspect,
 } from './src/types';
 
 import {
-    buildGenerateChartBody, enabledAspectNames, enabledPlanetNames,
+    buildCycleQuery, buildGenerateChartBody, enabledAspectNames, enabledPlanetNames,
     filterNatalTransits, filterSkyAspects, formatPlanetLine, formatSkyAspectLine,
     joinUrl, migrateSettings, moonPhaseEmoji, natalTransitQuery,
     normalizeBaseUrl, planetGlyph,
@@ -21,12 +21,28 @@ import {
 } from './src/techniques/ki';
 import { castHexagram, formatCast } from './src/techniques/hexagram';
 
+import {
+    KnowledgeBackend, NullKnowledgeBackend, formatChunks,
+} from './src/knowledge/backend';
+import { Neo4jKnowledgeBackend } from './src/knowledge/neo4j';
+import { parsePlacement } from './src/knowledge/parse';
+
+import { LLMProvider, NullLLMProvider } from './src/synthesis/provider';
+import { OpenAIProvider } from './src/synthesis/providers/openai';
+import { AnthropicProvider } from './src/synthesis/providers/anthropic';
+import {
+    synthesizeChartReading, synthesizeDiscover, synthesizePlacement,
+} from './src/synthesis/synthesize';
+import { saveMemoryRecord } from './src/synthesis/memory';
+
 /* ──────────────────────────────────────────────────────────────────────── *
  * Plugin
  * ──────────────────────────────────────────────────────────────────────── */
 
 export default class MoonPlugin extends Plugin {
     settings!: MoonPluginSettings;
+    knowledge: KnowledgeBackend = new NullKnowledgeBackend();
+    llm: LLMProvider = new NullLLMProvider();
 
     public api = {
         getMoonData: this.getMoonData.bind(this),
@@ -48,10 +64,19 @@ export default class MoonPlugin extends Plugin {
         getMidpointTransits: this.getMidpointTransits.bind(this),
         getNextEclipse: this.getNextEclipse.bind(this),
         getDashas: this.getDashas.bind(this),
+        getCycle: this.getCycle.bind(this),
+        searchKnowledge: this.searchKnowledge.bind(this),
+        interpretPlacement: this.interpretPlacement.bind(this),
+        // Synthesis
+        chartReading: this.chartReading.bind(this),
+        discoverPatterns: this.discoverPatterns.bind(this),
+        interpretPlacementLLM: this.interpretPlacementLLM.bind(this),
     };
 
     async onload() {
         await this.loadSettings();
+        this.rebuildKnowledgeBackend();
+        this.rebuildLLMProvider();
 
         this.addSettingTab(new MoonSettingTab(this.app, this));
 
@@ -251,6 +276,115 @@ export default class MoonPlugin extends Plugin {
                     .catch(err => this.handleError(editor, 'dashas', err));
             },
         });
+
+        this.addCommand({
+            id: 'plot-cycle',
+            name: 'Plot Planetary Cycle (modal)',
+            editorCallback: (editor: Editor) => {
+                new CycleModal(this.app, this, editor).open();
+            },
+        });
+
+        /* ── Knowledge layer ── */
+
+        this.addCommand({
+            id: 'knowledge-search',
+            name: 'Knowledge Search',
+            editorCallback: (editor: Editor) => {
+                if (!this.knowledge.isConfigured()) {
+                    new Notice('Configure a knowledge backend in settings first.');
+                    return;
+                }
+                new KnowledgeSearchModal(this.app, this, editor).open();
+            },
+        });
+
+        this.addCommand({
+            id: 'interpret-selection',
+            name: 'Interpret Selected Placement (knowledge only)',
+            editorCallback: (editor: Editor) => {
+                const selection = editor.getSelection().trim() || editor.getLine(editor.getCursor().line).trim();
+                if (!selection) {
+                    new Notice('Select a placement first (e.g. "Mars Capricorn 15˚" or "♂ ♑").');
+                    return;
+                }
+                this.interpretPlacement(selection)
+                    .then(text => editor.replaceSelection(text))
+                    .catch(err => this.handleError(editor, 'interpretation', err));
+            },
+        });
+
+        /* ── Synthesis (LLM-grounded readings) ── */
+
+        this.addCommand({
+            id: 'chart-reading',
+            name: 'Insert Chart Reading (LLM)',
+            editorCallback: (editor: Editor) => {
+                if (!this.settings.defaultChart) {
+                    new Notice('Pick a default chart in Natal Chart settings first.');
+                    return;
+                }
+                if (!this.llm.isConfigured()) {
+                    new Notice('Configure an LLM provider in the LLM settings tab first.');
+                    return;
+                }
+                const file = this.app.workspace.getActiveFile();
+                this.chartReading(this.settings.defaultChart, file?.path)
+                    .then(text => editor.replaceSelection(text))
+                    .catch(err => this.handleError(editor, 'chart reading', err));
+            },
+        });
+
+        this.addCommand({
+            id: 'discover-patterns',
+            name: 'Discover Patterns for Default Chart (LLM)',
+            editorCallback: (editor: Editor) => {
+                if (!this.settings.defaultChart) {
+                    new Notice('Pick a default chart in Natal Chart settings first.');
+                    return;
+                }
+                if (!this.llm.isConfigured()) {
+                    new Notice('Configure an LLM provider in the LLM settings tab first.');
+                    return;
+                }
+                const file = this.app.workspace.getActiveFile();
+                this.discoverPatterns(this.settings.defaultChart, file?.path)
+                    .then(text => editor.replaceSelection(text))
+                    .catch(err => this.handleError(editor, 'discover', err));
+            },
+        });
+
+        this.addCommand({
+            id: 'interpret-selection-llm',
+            name: 'Interpret Selected Placement (LLM + knowledge)',
+            editorCallback: (editor: Editor) => {
+                const selection = editor.getSelection().trim() || editor.getLine(editor.getCursor().line).trim();
+                if (!selection) {
+                    new Notice('Select a placement first.');
+                    return;
+                }
+                if (!this.llm.isConfigured()) {
+                    new Notice('Configure an LLM provider in the LLM settings tab first.');
+                    return;
+                }
+                const file = this.app.workspace.getActiveFile();
+                this.interpretPlacementLLM(selection, file?.path)
+                    .then(text => editor.replaceSelection(text))
+                    .catch(err => this.handleError(editor, 'LLM interpretation', err));
+            },
+        });
+
+        this.addCommand({
+            id: 'cycle-crossings-default',
+            name: 'Cycle Crossings to Default Chart (next 6 months)',
+            editorCallback: (editor: Editor) => {
+                if (!this.settings.defaultChart) {
+                    new Notice('Pick a default chart in Natal Chart settings first.');
+                    return;
+                }
+                new CycleModal(this.app, this, editor, { quickCrossings: true }).open();
+            },
+        });
     }
 
     onunload() {
@@ -258,6 +392,47 @@ export default class MoonPlugin extends Plugin {
             delete (window as any).ObsidianMoon;
             delete (window as any).MoonPhasePlugin;
         } catch { /* ignore */ }
+        // Close the knowledge backend (e.g. neo4j driver) in the background;
+        // we intentionally don't await it during plugin teardown.
+        void this.knowledge.close().catch(() => { /* ignore */ });
+    }
+
+    /** Rebuild the LLM provider from current settings. */
+    rebuildLLMProvider() {
+        const ls = this.settings.llm;
+        switch (ls.provider) {
+            case 'openai':
+                this.llm = new OpenAIProvider({ baseUrl: ls.openaiBaseUrl, apiKey: ls.openaiApiKey });
+                break;
+            case 'ollama':
+                this.llm = new OpenAIProvider({ baseUrl: ls.ollamaBaseUrl, apiKey: '' });
+                break;
+            case 'anthropic':
+                this.llm = new AnthropicProvider({ baseUrl: ls.anthropicBaseUrl, apiKey: ls.anthropicApiKey });
+                break;
+            default:
+                this.llm = new NullLLMProvider();
+        }
+    }
+
+    /** Rebuild the knowledge backend from current settings. Called after
+     * settings change. Closes the old backend if any. */
+    rebuildKnowledgeBackend() {
+        const previous = this.knowledge;
+        const ks = this.settings.knowledge;
+        if (ks.backend === 'neo4j' && ks.neo4jUri && ks.neo4jUser && ks.neo4jPassword) {
+            this.knowledge = new Neo4jKnowledgeBackend({
+                uri: ks.neo4jUri,
+                user: ks.neo4jUser,
+                password: ks.neo4jPassword,
+                indexName: ks.neo4jIndexName,
+            });
+        } else {
+            this.knowledge = new NullKnowledgeBackend();
+        }
+        if (previous && previous !== this.knowledge) {
+            void previous.close().catch(() => { /* ignore */ });
+        }
     }
 
     /* ── Settings IO ── */
@@ -304,14 +479,14 @@ export default class MoonPlugin extends Plugin {
     }
 
     async getNatalTransits(chartName?: string): Promise<NatalTransitsResponse> {
-        const name = (chartName ?? this.settings.selectedChart).trim();
+        const name = (chartName ?? this.settings.defaultChart).trim();
         if (!name) throw new Error('No saved chart selected — pick one in Obsidian Moon settings.');
         const qs = natalTransitQuery(this.settings);
         return this.req<NatalTransitsResponse>(`/transits/${encodeURIComponent(name)}/now${qs}`);
     }
 
     async getNatalChart(chartName?: string): Promise<unknown> {
-        const name = (chartName ?? this.settings.selectedChart).trim();
+        const name = (chartName ?? this.settings.defaultChart).trim();
         if (!name) throw new Error('No saved chart selected.');
         return this.req<unknown>(`/chart/${encodeURIComponent(name)}`);
     }
@@ -327,7 +502,7 @@ export default class MoonPlugin extends Plugin {
 
     /* Routes through whichever mode is active. */
     private async getEffectiveAspects(): Promise<SkyAspect[]> {
-        if (this.settings.useNatalChart && this.settings.selectedChart) {
+        if (this.settings.useNatalChart && this.settings.defaultChart) {
             const data = await this.getNatalTransits();
             return filterNatalTransits(data.transits, this.settings);
         }
@@ -369,7 +544,7 @@ export default class MoonPlugin extends Plugin {
 
     /** Helios: midpoint transits to a saved chart. */
     async getMidpointTransits(chartName?: string): Promise<string> {
-        const name = (chartName ?? this.settings.selectedChart).trim();
+        const name = (chartName ?? this.settings.defaultChart).trim();
         if (!name) throw new Error('Pick a saved chart in Natal Chart settings first.');
         const data = await this.req<{ midpointTransits?: Array<{ midpoint: string; transit: string; aspect: string; orb: string }> }>(
             `/midpoint-transits/${encodeURIComponent(name)}?orb=${this.settings.midpointOrb}`);
@@ -395,9 +570,131 @@ export default class MoonPlugin extends Plugin {
         return `Next eclipse: ${first.type} on ${when}${where}.`;
     }
 
+    /* ── Knowledge ── */
+
+    /** Free-text knowledge search across the configured backend. */
+    async searchKnowledge(opts: {
+        query: string; planet?: string; sign?: string; house?: number;
+        aspect?: string; layer?: string; tradition?: string; author?: string;
+        trustTier?: number; limit?: number;
+    }): Promise<string> {
+        if (!this.knowledge.isConfigured()) {
+            return 'Knowledge backend not configured — set one up in the Knowledge settings tab.';
+        }
+        const limit = opts.limit ?? this.settings.knowledge.defaultResultLimit;
+        const chunks = await this.knowledge.search({ ...opts, limit });
+        return formatChunks(chunks, opts.query);
+    }
+
+    /** Parse a free-text placement (e.g. "Mars Capricorn 15˚") and search
+     * the knowledge graph for interpretations matching the structural parts. */
+    async interpretPlacement(text: string): Promise<string> {
+        if (!this.knowledge.isConfigured()) {
+            return 'Knowledge backend not configured — set one up in the Knowledge settings tab.';
+        }
+        const parsed = parsePlacement(text);
+        if (!parsed.query && parsed.matched.length === 0) {
+            return `Couldn't parse anything from "${text}".`;
+        }
+        const chunks = await this.knowledge.search({
+            query: parsed.query || parsed.matched.join(' '),
+            planet: parsed.planet,
+            sign: parsed.sign,
+            house: parsed.house,
+            aspect: parsed.aspect,
+            limit: this.settings.knowledge.defaultResultLimit,
+        });
+        const header = `Interpretation for **${text.trim()}** ` +
+            `(parsed: ${parsed.matched.join(', ') || 'free-text'})`;
+        return `${header}\n\n${formatChunks(chunks, text).split('\n').slice(1).join('\n')}`;
+    }
+
+    /* ── Synthesis (LLM + knowledge) ── */
+
+    private synthDeps() {
+        return {
+            knowledge: this.knowledge,
+            llm: this.llm,
+            model: this.settings.llm.model,
+            maxTokens: this.settings.llm.maxTokens,
+            temperature: this.settings.llm.temperature,
+            knowledgeLimit: this.settings.llm.knowledgeLimit,
+        };
+    }
+
+    async chartReading(chartName?: string, sourceNote?: string): Promise<string> {
+        const name = (chartName ?? this.settings.defaultChart).trim();
+        if (!name) throw new Error('No chart selected.');
+        const chart = await this.getNatalChart(name);
+        const body = await synthesizeChartReading(this.synthDeps(), { chartName: name, chart });
+        await this.saveMemory({ chart: name, kind: 'chart-reading', sourceNote, body });
+        return body;
+    }
+
+    async discoverPatterns(chartName?: string, sourceNote?: string): Promise<string> {
+        const name = (chartName ?? this.settings.defaultChart).trim();
+        if (!name) throw new Error('No chart selected.');
+        const [chart, transits] = await Promise.all([
+            this.getNatalChart(name),
+            this.getNatalTransits(name).catch(() => null),
+        ]);
+        const body = await synthesizeDiscover(this.synthDeps(), {
+            chartName: name, chart, transits: transits ?? undefined,
+        });
+        await this.saveMemory({ chart: name, kind: 'discover', sourceNote, body });
+        return body;
+    }
+
+    async interpretPlacementLLM(placement: string, sourceNote?: string): Promise<string> {
+        const body = await synthesizePlacement(this.synthDeps(), placement);
+        await this.saveMemory({
+            chart: this.settings.defaultChart,
+            kind: 'interpret-placement',
+            sourceNote,
+            placement,
+            body,
+        });
+        return body;
+    }
+
+    private async saveMemory(record: Omit<Parameters<typeof saveMemoryRecord>[2], 'timestamp'>): Promise<void> {
+        if (!this.settings.llm.memoryFolder) return;
+        try {
+            await saveMemoryRecord(this.app, this.settings.llm.memoryFolder, {
+                ...record,
+                timestamp: new Date().toISOString(),
+            });
+        } catch (err) {
+            console.warn('obsidian-moon: failed to save memory record', err);
+        }
+    }
+
+    /** Helios: planet cycle timeline + optional natal-chart crossings.
+     * Returns the raw CycleResponse so callers can render it however they want
+     * (markdown summary, frontmatter, future animated chart view, etc.). */
+    async getCycle(opts: {
+        planet: string;
+        start: string;
+        end: string;
+        interval?: 'hourly' | '6h' | 'daily' | 'weekly';
+        natalCharts?: string[];   // defaults to trackedCharts
+        natalPoints?: string[];
+        aspects?: string[];
+        orb?: number;
+    }): Promise<CycleResponse> {
+        const charts = opts.natalCharts ?? this.settings.trackedCharts;
+        const { planet, query } = buildCycleQuery({
+            ...opts,
+            natalCharts: charts,
+            interval: opts.interval ?? this.settings.cycleInterval,
+            orb: opts.orb ?? this.settings.cycleOrb,
+        });
+        return this.req<CycleResponse>(`/cycle/${encodeURIComponent(planet)}?${query}`);
+    }
+
     /** Helios: Vimshottari dasha periods for a saved chart. */
     async getDashas(chartName?: string, levels = 2): Promise<string> {
-        const name = (chartName ?? this.settings.selectedChart).trim();
+        const name = (chartName ?? this.settings.defaultChart).trim();
         if (!name) throw new Error('Pick a saved chart in Natal Chart settings first.');
         const data = await this.req<{ dashas?: Array<{ planet: string; start: string; end: string; sub?: any[] }> }>(
             `/dashas/${encodeURIComponent(name)}?levels=${levels}`);
@@ -408,7 +705,7 @@ export default class MoonPlugin extends Plugin {
     }
 
     private async fetchChartBirthDate(): Promise<string> {
-        if (!this.settings.selectedChart) return '';
+        if (!this.settings.defaultChart) return '';
         try {
             const chart = await this.getNatalChart() as any;
             return chart?.birthData?.date ?? '';
@@ -460,7 +757,7 @@ export default class MoonPlugin extends Plugin {
  * Settings UI — tabbed, follows the Periodic Ritual pattern
  * ──────────────────────────────────────────────────────────────────────── */
 
-type TabId = 'general' | 'chart' | 'planets' | 'aspects' | 'techniques';
+type TabId = 'general' | 'chart' | 'planets' | 'aspects' | 'techniques' | 'knowledge' | 'llm';
 
 interface NominatimResult {
     display_name: string;
@@ -499,6 +796,8 @@ class MoonSettingTab extends PluginSettingTab {
             { id: 'planets', label: 'Planets' },
             { id: 'aspects', label: 'Aspects' },
             { id: 'techniques', label: 'Techniques' },
+            { id: 'knowledge', label: 'Knowledge' },
+            { id: 'llm', label: 'LLM' },
         ];
 
         const bar = containerEl.createDiv({ cls: 'moon-tab-bar' });
@@ -520,6 +819,8 @@ class MoonSettingTab extends PluginSettingTab {
             case 'planets':    this.renderPlanets(body); break;
             case 'aspects':    this.renderAspects(body); break;
             case 'techniques': this.renderTechniques(body); break;
+            case 'knowledge':  this.renderKnowledge(body); break;
+            case 'llm':        this.renderLLM(body); break;
         }
     }
 
@@ -567,27 +868,67 @@ class MoonSettingTab extends PluginSettingTab {
     private renderChart(c: HTMLElement) {
         c.createEl('p', {
             cls: 'moon-tab-intro',
-            text: 'Pick one of the natal charts saved on your Sweph server. When "Use natal chart for transits" is on, the aspect commands return transits to that chart instead of plain sky-to-sky aspects.',
+            text: 'Track one or more natal charts saved on your Sweph server. The "default" chart is used when a command needs a single chart (Preview transits, Dashas, etc.). All tracked charts are used for cycle-crossings and bulk transit queries.',
         });
 
-        // ── Saved-chart picker ──
+        // ── Tracked-charts list ──
+        new Setting(c)
+            .setName('Tracked charts')
+            .setDesc(this.plugin.settings.trackedCharts.length === 0
+                ? 'No charts tracked yet. Pick from the dropdown below.'
+                : this.plugin.settings.trackedCharts.map(n =>
+                    n === this.plugin.settings.defaultChart ? `★ ${n}` : n,
+                ).join(' · '));
+
+        for (const name of this.plugin.settings.trackedCharts) {
+            const isDefault = name === this.plugin.settings.defaultChart;
+            const row = new Setting(c)
+                .setName(`${isDefault ? '★ ' : ''}${name}`)
+                .setDesc(isDefault ? 'Default chart for single-chart commands.' : '');
+            if (!isDefault) {
+                row.addButton(b => b.setButtonText('Set default').onClick(async () => {
+                    this.plugin.settings.defaultChart = name;
+                    await this.plugin.saveSettings();
+                    this.display();
+                }));
+            }
+            row.addButton(b => b.setButtonText('Remove').setWarning().onClick(async () => {
+                this.plugin.settings.trackedCharts = this.plugin.settings.trackedCharts.filter(n => n !== name);
+                if (this.plugin.settings.defaultChart === name) {
+                    this.plugin.settings.defaultChart = this.plugin.settings.trackedCharts[0] ?? '';
+                }
+                await this.plugin.saveSettings();
+                this.display();
+            }));
+        }
+
+        // ── Add new tracked chart ──
         const pickerSetting = new Setting(c)
-            .setName('Saved chart')
+            .setName('Add a chart')
             .setDesc('Charts saved on the server via /generate-chart.');
 
         const dropdown = pickerSetting.controlEl.createEl('select', { cls: 'dropdown' }) as HTMLSelectElement;
+        const addBtn = pickerSetting.controlEl.createEl('button', { text: 'Add' });
         const refreshBtn = pickerSetting.controlEl.createEl('button', { text: 'Refresh' });
         refreshBtn.addEventListener('click', async () => {
             this.cachedCharts = null;
             await this.populateChartDropdown(dropdown);
         });
-
-        // Initial populate
-        this.populateChartDropdown(dropdown);
-        dropdown.addEventListener('change', async () => {
-            this.plugin.settings.selectedChart = dropdown.value;
+        addBtn.addEventListener('click', async () => {
+            const choice = dropdown.value;
+            if (!choice) return;
+            if (this.plugin.settings.trackedCharts.includes(choice)) {
+                new Notice(`Already tracking ${choice}`);
+                return;
+            }
+            this.plugin.settings.trackedCharts.push(choice);
+            if (!this.plugin.settings.defaultChart) {
+                this.plugin.settings.defaultChart = choice;
+            }
             await this.plugin.saveSettings();
+            this.display();
         });
+        this.populateChartDropdown(dropdown);
 
         new Setting(c)
             .setName('Use natal chart for transits')
@@ -627,7 +968,7 @@ class MoonSettingTab extends PluginSettingTab {
                 .setButtonText('Preview transits')
                 .setCta()
                 .onClick(async () => {
-                    if (!this.plugin.settings.selectedChart) {
+                    if (!this.plugin.settings.defaultChart) {
                         new Notice('Pick a saved chart first.');
                         return;
                     }
@@ -734,7 +1075,12 @@ class MoonSettingTab extends PluginSettingTab {
                         });
                         await this.plugin.generateChart(body);
                         new Notice(`Saved chart "${body.name}"`);
-                        this.plugin.settings.selectedChart = body.name;
+                        if (!this.plugin.settings.trackedCharts.includes(body.name)) {
+                            this.plugin.settings.trackedCharts.push(body.name);
+                        }
+                        if (!this.plugin.settings.defaultChart) {
+                            this.plugin.settings.defaultChart = body.name;
+                        }
                         await this.plugin.saveSettings();
                         this.cachedCharts = null;
                         this.display();
@@ -747,7 +1093,7 @@ class MoonSettingTab extends PluginSettingTab {
     }
 
     private async populateChartDropdown(dropdown: HTMLSelectElement) {
-        const current = this.plugin.settings.selectedChart;
+        const current = this.plugin.settings.defaultChart;
         dropdown.empty();
         dropdown.createEl('option', { text: '— None (sky-to-sky aspects) —', value: '' });
 
@@ -930,4 +1276,429 @@ class MoonSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
     }
+
+    /* ── Knowledge ── */
+    private renderKnowledge(c: HTMLElement) {
+        c.createEl('p', {
+            cls: 'moon-tab-intro',
+            text: 'Connect to a knowledge graph of astrological interpretations. Currently supports Neo4j with the schema produced by the Stella ingest pipeline (Interpretation nodes with a full-text index). When connected, "Knowledge Search" and "Interpret Selected Placement" commands return grounded snippets from the corpus.',
+        });
+
+        new Setting(c)
+            .setName('Backend')
+            .setDesc('Where to look up interpretations. "Off" disables knowledge commands.')
+            .addDropdown(dd => {
+                dd.addOption('off', 'Off');
+                dd.addOption('neo4j', 'Neo4j');
+                dd.setValue(this.plugin.settings.knowledge.backend);
+                dd.onChange(async (v) => {
+                    this.plugin.settings.knowledge.backend = v as any;
+                    await this.plugin.saveSettings();
+                    this.plugin.rebuildKnowledgeBackend();
+                    this.display();
+                });
+            });
+
+        if (this.plugin.settings.knowledge.backend === 'neo4j') {
+            new Setting(c)
+                .setName('Neo4j URI')
+                .setDesc('Bolt connection string (e.g. bolt://localhost:7687).')
+                .addText(t => t
+                    .setPlaceholder('bolt://localhost:7687')
+                    .setValue(this.plugin.settings.knowledge.neo4jUri)
+                    .onChange(async (v) => {
+                        this.plugin.settings.knowledge.neo4jUri = v.trim();
+                        await this.plugin.saveSettings();
+                        this.plugin.rebuildKnowledgeBackend();
+                    }));
+
+            new Setting(c)
+                .setName('Username')
+                .addText(t => t
+                    .setPlaceholder('neo4j')
+                    .setValue(this.plugin.settings.knowledge.neo4jUser)
+                    .onChange(async (v) => {
+                        this.plugin.settings.knowledge.neo4jUser = v.trim();
+                        await this.plugin.saveSettings();
+                        this.plugin.rebuildKnowledgeBackend();
+                    }));
+
+            new Setting(c)
+                .setName('Password')
+                .setDesc('Stored in plain text in data.json. Use a read-only Neo4j account when possible.')
+                .addText(t => {
+                    t.inputEl.type = 'password';
+                    t.setValue(this.plugin.settings.knowledge.neo4jPassword)
+                        .onChange(async (v) => {
+                            this.plugin.settings.knowledge.neo4jPassword = v;
+                            await this.plugin.saveSettings();
+                            this.plugin.rebuildKnowledgeBackend();
+                        });
+                });
+
+            new Setting(c)
+                .setName('Full-text index name')
+                .setDesc('Neo4j full-text index on Interpretation.text. Defaults to "interpretation_text" (matches Stella ingest).')
+                .addText(t => t
+                    .setPlaceholder('interpretation_text')
+                    .setValue(this.plugin.settings.knowledge.neo4jIndexName)
+                    .onChange(async (v) => {
+                        this.plugin.settings.knowledge.neo4jIndexName = v.trim() || 'interpretation_text';
+                        await this.plugin.saveSettings();
+                        this.plugin.rebuildKnowledgeBackend();
+                    }));
+
+            new Setting(c)
+                .setName('Default result limit')
+                .setDesc('How many chunks to return per Knowledge Search.')
+                .addSlider(s => s
+                    .setLimits(1, 20, 1)
+                    .setValue(this.plugin.settings.knowledge.defaultResultLimit)
+                    .setDynamicTooltip()
+                    .onChange(async (v) => {
+                        this.plugin.settings.knowledge.defaultResultLimit = v;
+                        await this.plugin.saveSettings();
+                    }));
+
+            new Setting(c)
+                .setName('Test connection')
+                .setDesc('Run a stats query to confirm the backend is reachable.')
+                .addButton(btn => btn
+                    .setButtonText('Test')
+                    .setCta()
+                    .onClick(async () => {
+                        btn.setDisabled(true).setButtonText('Testing…');
+                        try {
+                            const stats = await this.plugin.knowledge.stats();
+                            new Notice(
+                                `Connected: ${stats.interpretationCount} interpretation nodes, ${stats.authorCount ?? '?'} authors.`,
+                            );
+                        } catch (err: any) {
+                            new Notice(`Connection failed: ${err?.message ?? err}`, 8000);
+                        } finally {
+                            btn.setDisabled(false).setButtonText('Test');
+                        }
+                    }));
+        }
+    }
+
+    /* ── LLM ── */
+    private renderLLM(c: HTMLElement) {
+        c.createEl('p', {
+            cls: 'moon-tab-intro',
+            text: 'Pick an LLM provider for the synthesis commands (Insert Chart Reading, Discover Patterns, Interpret with LLM). The plugin uses your provider directly — Obsidian Moon never sees your API keys. Generated readings are also saved to a vault folder so you can refer back to them.',
+        });
+
+        new Setting(c)
+            .setName('Provider')
+            .addDropdown(dd => {
+                dd.addOption('off', 'Off');
+                dd.addOption('openai', 'OpenAI (or OpenAI-compatible)');
+                dd.addOption('anthropic', 'Anthropic Claude');
+                dd.addOption('ollama', 'Ollama (local)');
+                dd.setValue(this.plugin.settings.llm.provider);
+                dd.onChange(async (v) => {
+                    this.plugin.settings.llm.provider = v as any;
+                    await this.plugin.saveSettings();
+                    this.plugin.rebuildLLMProvider();
+                    this.display();
+                });
+            });
+
+        const provider = this.plugin.settings.llm.provider;
+
+        new Setting(c)
+            .setName('Model')
+            .setDesc('Model name as the provider expects it (e.g. gpt-4o-mini, claude-sonnet-4-6, llama3.1:8b).')
+            .addText(t => t
+                .setPlaceholder('claude-sonnet-4-6')
+                .setValue(this.plugin.settings.llm.model)
+                .onChange(async (v) => {
+                    this.plugin.settings.llm.model = v.trim();
+                    await this.plugin.saveSettings();
+                }));
+
+        if (provider === 'openai') {
+            new Setting(c).setName('OpenAI base URL').addText(t => t
+                .setPlaceholder('https://api.openai.com')
+                .setValue(this.plugin.settings.llm.openaiBaseUrl)
+                .onChange(async (v) => {
+                    this.plugin.settings.llm.openaiBaseUrl = v.trim();
+                    await this.plugin.saveSettings();
+                    this.plugin.rebuildLLMProvider();
+                }));
+            new Setting(c).setName('OpenAI API key').addText(t => {
+                t.inputEl.type = 'password';
+                t.setValue(this.plugin.settings.llm.openaiApiKey).onChange(async (v) => {
+                    this.plugin.settings.llm.openaiApiKey = v;
+                    await this.plugin.saveSettings();
+                    this.plugin.rebuildLLMProvider();
+                });
+            });
+        } else if (provider === 'anthropic') {
+            new Setting(c).setName('Anthropic base URL').addText(t => t
+                .setPlaceholder('https://api.anthropic.com')
+                .setValue(this.plugin.settings.llm.anthropicBaseUrl)
+                .onChange(async (v) => {
+                    this.plugin.settings.llm.anthropicBaseUrl = v.trim();
+                    await this.plugin.saveSettings();
+                    this.plugin.rebuildLLMProvider();
+                }));
+            new Setting(c).setName('Anthropic API key').addText(t => {
+                t.inputEl.type = 'password';
+                t.setValue(this.plugin.settings.llm.anthropicApiKey).onChange(async (v) => {
+                    this.plugin.settings.llm.anthropicApiKey = v;
+                    await this.plugin.saveSettings();
+                    this.plugin.rebuildLLMProvider();
+                });
+            });
+        } else if (provider === 'ollama') {
+            new Setting(c).setName('Ollama base URL').setDesc('Local Ollama server, OpenAI-compatible API.')
+                .addText(t => t
+                    .setPlaceholder('http://localhost:11434')
+                    .setValue(this.plugin.settings.llm.ollamaBaseUrl)
+                    .onChange(async (v) => {
+                        this.plugin.settings.llm.ollamaBaseUrl = v.trim();
+                        await this.plugin.saveSettings();
+                        this.plugin.rebuildLLMProvider();
+                    }));
+        }
+
+        if (provider !== 'off') {
+            new Setting(c).setName('Max tokens').addSlider(s => s
+                .setLimits(256, 4096, 64)
+                .setValue(this.plugin.settings.llm.maxTokens)
+                .setDynamicTooltip()
+                .onChange(async (v) => {
+                    this.plugin.settings.llm.maxTokens = v;
+                    await this.plugin.saveSettings();
+                }));
+            new Setting(c).setName('Temperature').addSlider(s => s
+                .setLimits(0, 1.5, 0.05)
+                .setValue(this.plugin.settings.llm.temperature)
+                .setDynamicTooltip()
+                .onChange(async (v) => {
+                    this.plugin.settings.llm.temperature = v;
+                    await this.plugin.saveSettings();
+                }));
+            new Setting(c).setName('Knowledge chunks per synthesis')
+                .setDesc('How many knowledge graph chunks to retrieve and inline as context for each LLM call.')
+                .addSlider(s => s
+                    .setLimits(0, 20, 1)
+                    .setValue(this.plugin.settings.llm.knowledgeLimit)
+                    .setDynamicTooltip()
+                    .onChange(async (v) => {
+                        this.plugin.settings.llm.knowledgeLimit = v;
+                        await this.plugin.saveSettings();
+                    }));
+            new Setting(c).setName('Memory folder')
+                .setDesc('Vault folder where generated readings are saved (with frontmatter for Dataview). Leave empty to disable memory.')
+                .addText(t => t
+                    .setPlaceholder('ObsidianMoon/memory')
+                    .setValue(this.plugin.settings.llm.memoryFolder)
+                    .onChange(async (v) => {
+                        this.plugin.settings.llm.memoryFolder = v.trim();
+                        await this.plugin.saveSettings();
+                    }));
+        }
+    }
+}
+
+/* ──────────────────────────────────────────────────────────────────────── *
+ * Cycle modal — picker for planet + date range, then render the response
+ * ──────────────────────────────────────────────────────────────────────── */
+
+class CycleModal extends Modal {
+    plugin: MoonPlugin;
+    editor: Editor;
+    private planet = 'venus';
+    private start: string;
+    private end: string;
+    private interval: 'hourly' | '6h' | 'daily' | 'weekly';
+    private quickCrossings: boolean;
+
+    constructor(app: App, plugin: MoonPlugin, editor: Editor, opts?: { quickCrossings?: boolean }) {
+        super(app);
+        this.plugin = plugin;
+        this.editor = editor;
+        this.quickCrossings = !!opts?.quickCrossings;
+
+        const today = new Date();
+        const end = new Date();
+        end.setMonth(end.getMonth() + (plugin.settings.cycleLookaheadMonths ?? 6));
+        this.start = isoDate(today);
+        this.end = isoDate(end);
+        this.interval = plugin.settings.cycleInterval ?? 'daily';
+    }
+
+    onOpen() {
+        const { contentEl } = this;
+        contentEl.empty();
+        contentEl.createEl('h2', { text: 'Plot Planetary Cycle' });
+
+        new Setting(contentEl).setName('Planet').addDropdown(dd => {
+            for (const p of ['sun','moon','mercury','venus','mars','jupiter','saturn','uranus','neptune','pluto']) {
+                dd.addOption(p, p.charAt(0).toUpperCase() + p.slice(1));
+            }
+            dd.setValue(this.planet);
+            dd.onChange(v => { this.planet = v; });
+        });
+
+        const startSetting = new Setting(contentEl).setName('Start date');
+        const startInput = startSetting.controlEl.createEl('input', { type: 'date' }) as HTMLInputElement;
+        startInput.value = this.start;
+        startInput.addEventListener('change', () => { this.start = startInput.value; });
+
+        const endSetting = new Setting(contentEl).setName('End date');
+        const endInput = endSetting.controlEl.createEl('input', { type: 'date' }) as HTMLInputElement;
+        endInput.value = this.end;
+        endInput.addEventListener('change', () => { this.end = endInput.value; });
+
+        new Setting(contentEl).setName('Sample interval').addDropdown(dd => {
+            for (const i of ['hourly', '6h', 'daily', 'weekly']) dd.addOption(i, i);
+            dd.setValue(this.interval);
+            dd.onChange(v => { this.interval = v as any; });
+        });
+
+        const tracked = this.plugin.settings.trackedCharts ?? [];
+        if (tracked.length > 0) {
+            contentEl.createEl('p', {
+                text: `Crossings will be checked against ${tracked.length} tracked chart${tracked.length > 1 ? 's' : ''}: ${tracked.join(', ')}.`,
+                cls: 'moon-tab-intro',
+            });
+        } else {
+            contentEl.createEl('p', {
+                text: 'No tracked charts configured — output will be timeline only (no natal crossings).',
+                cls: 'moon-tab-intro',
+            });
+        }
+
+        const btnRow = contentEl.createDiv({ cls: 'moon-modal-btn-row' });
+        const runBtn = btnRow.createEl('button', { text: 'Plot cycle', cls: 'mod-cta' });
+        runBtn.addEventListener('click', async () => {
+            runBtn.disabled = true;
+            runBtn.setText('Computing…');
+            try {
+                const data = await this.plugin.getCycle({
+                    planet: this.planet,
+                    start: this.start,
+                    end: this.end,
+                    interval: this.interval,
+                });
+                this.editor.replaceSelection(formatCycleResponse(data, this.quickCrossings));
+                this.close();
+            } catch (err: any) {
+                new Notice(`Cycle failed: ${err?.message ?? err}`, 8000);
+                runBtn.disabled = false;
+                runBtn.setText('Plot cycle');
+            }
+        });
+        btnRow.createEl('button', { text: 'Cancel' }).addEventListener('click', () => this.close());
+    }
+
+    onClose() {
+        this.contentEl.empty();
+    }
+}
+
+function isoDate(d: Date): string {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+}
+
+function formatCycleResponse(data: CycleResponse, eventsOnly: boolean): string {
+    const lines: string[] = [];
+    lines.push(`# ${data.planet} cycle — ${data.start} → ${data.end}`);
+    lines.push('');
+    if (data.cyclePeriodDays) {
+        lines.push(`*${data.planet} tropical period: ~${data.cyclePeriodDays.toFixed(1)} days. Interval: ${data.interval} (${data.pointCount} samples).*`);
+        lines.push('');
+    }
+    if (data.natalEventCount > 0) {
+        lines.push(`## Aspect crossings (${data.natalEventCount})`);
+        lines.push('');
+        lines.push('| Date | Aspect | Natal point | Chart | Orb |');
+        lines.push('|---|---|---|---|---|');
+        for (const e of data.natalEvents) {
+            const exact = e.isExact ? ' ⭐' : '';
+            lines.push(`| ${e.transitDate}${exact} | ${e.aspect} | ${e.natalPoint} | ${e.chart} | ${e.orb}° |`);
+        }
+        lines.push('');
+    }
+    if (!eventsOnly && data.timeline.length > 0) {
+        // Trim a giant timeline to a digestible sample
+        const step = Math.max(1, Math.floor(data.timeline.length / 50));
+        lines.push(`## Timeline sample (every ${step}${step > 1 ? '×' : ''} ${data.interval})`);
+        lines.push('');
+        lines.push('| Date | Sign | Degree | Retro |');
+        lines.push('|---|---|---|---|');
+        for (let i = 0; i < data.timeline.length; i += step) {
+            const t = data.timeline[i];
+            lines.push(`| ${t.date} | ${t.sign} | ${t.degreeInSign}° | ${t.isRetrograde ? '℞' : ''} |`);
+        }
+    }
+    return lines.join('\n');
+}
+
+/* ──────────────────────────────────────────────────────────────────────── *
+ * Knowledge search modal
+ * ──────────────────────────────────────────────────────────────────────── */
+
+class KnowledgeSearchModal extends Modal {
+    plugin: MoonPlugin;
+    editor: Editor;
+    private query = '';
+
+    constructor(app: App, plugin: MoonPlugin, editor: Editor) {
+        super(app);
+        this.plugin = plugin;
+        this.editor = editor;
+        const selection = editor.getSelection().trim();
+        if (selection) this.query = selection;
+    }
+
+    onOpen() {
+        const { contentEl } = this;
+        contentEl.empty();
+        contentEl.createEl('h2', { text: 'Knowledge Search' });
+        contentEl.createEl('p', {
+            cls: 'moon-tab-intro',
+            text: 'Free-text query against your astrology knowledge graph. Pulls grounded interpretations from the configured backend.',
+        });
+
+        const input = contentEl.createEl('input', {
+            type: 'text',
+            placeholder: 'e.g. Saturn return, Mars in 12th house, Venus conjunct Pluto',
+        }) as HTMLInputElement;
+        input.style.width = '100%';
+        input.style.padding = '8px';
+        input.style.marginBottom = '12px';
+        input.value = this.query;
+        input.focus();
+        input.addEventListener('input', () => { this.query = input.value; });
+
+        const btnRow = contentEl.createDiv({ cls: 'moon-modal-btn-row' });
+        const runBtn = btnRow.createEl('button', { text: 'Insert results', cls: 'mod-cta' });
+        const runQuery = async () => {
+            if (!this.query.trim()) return;
+            runBtn.disabled = true;
+            runBtn.setText('Searching…');
+            try {
+                const text = await this.plugin.searchKnowledge({ query: this.query });
+                this.editor.replaceSelection(text);
+                this.close();
+            } catch (err: any) {
+                new Notice(`Search failed: ${err?.message ?? err}`, 8000);
+                runBtn.disabled = false;
+                runBtn.setText('Insert results');
+            }
+        };
+        runBtn.addEventListener('click', runQuery);
+        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') runQuery(); });
+        btnRow.createEl('button', { text: 'Cancel' }).addEventListener('click', () => this.close());
+    }
+
+    onClose() { this.contentEl.empty(); }
 }

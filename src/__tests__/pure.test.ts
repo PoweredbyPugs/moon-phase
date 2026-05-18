@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-    buildGenerateChartBody, enabledAspectNames, enabledPlanetNames,
+    buildCycleQuery, buildGenerateChartBody, enabledAspectNames, enabledPlanetNames,
     filterNatalTransits, filterSkyAspects, formatPlanetLine, formatSkyAspectLine,
     joinUrl, migrateSettings, moonPhaseEmoji, natalAspectName,
     natalTransitQuery, natalTransitToSkyAspect, normalizeBaseUrl, planetGlyph,
@@ -60,7 +60,8 @@ describe('migrateSettings', () => {
         expect(out.aspects['Semi-sextile']).toBe(true);
         expect(out.aspects.Quintile).toBe(false);
         // v2-only fields should fall back to defaults
-        expect(out.selectedChart).toBe('');
+        expect(out.defaultChart).toBe('');
+        expect(out.trackedCharts).toEqual([]);
         expect(out.useNatalChart).toBe(false);
         expect(out.majorOnly).toBe(true);
         expect(out.natalOrb).toBe(8);
@@ -69,7 +70,7 @@ describe('migrateSettings', () => {
     it('preserves v2 settings when already migrated', () => {
         const v2 = {
             serverUrl: 'http://baratie:3000',
-            selectedChart: 'chris',
+            selectedChart: 'chris',           // v1.2 legacy field — migrated to defaultChart
             useNatalChart: true,
             majorOnly: false,
             natalOrb: 5,
@@ -77,7 +78,8 @@ describe('migrateSettings', () => {
             aspects: { ...DEFAULT_SETTINGS.aspects, Quintile: true },
         };
         const out = migrateSettings(v2);
-        expect(out.selectedChart).toBe('chris');
+        expect(out.defaultChart).toBe('chris');
+        expect(out.trackedCharts).toContain('chris');
         expect(out.useNatalChart).toBe(true);
         expect(out.majorOnly).toBe(false);
         expect(out.natalOrb).toBe(5);
@@ -349,5 +351,111 @@ describe('formatPlanetLine & formatSkyAspectLine', () => {
             planet1Retrograde: true, planet2Retrograde: false,
         });
         expect(line).toBe('♇ ℞ □ ♂');
+    });
+});
+
+/* ── Cycle query builder ── */
+
+describe('buildCycleQuery', () => {
+    it('builds minimal query (planet, start, end)', () => {
+        const { planet, query } = buildCycleQuery({
+            planet: 'Venus', start: '2026-05-17', end: '2026-08-17',
+        });
+        expect(planet).toBe('venus');
+        const params = new URLSearchParams(query);
+        expect(params.get('start')).toBe('2026-05-17');
+        expect(params.get('end')).toBe('2026-08-17');
+    });
+
+    it('includes interval and orb when set', () => {
+        const { query } = buildCycleQuery({
+            planet: 'mars', start: '2026-01-01', end: '2026-12-31',
+            interval: 'weekly', orb: 0.5,
+        });
+        const params = new URLSearchParams(query);
+        expect(params.get('interval')).toBe('weekly');
+        expect(params.get('orb')).toBe('0.5');
+    });
+
+    it('appends natalChart as repeated params', () => {
+        const { query } = buildCycleQuery({
+            planet: 'jupiter', start: '2026-01-01', end: '2026-12-31',
+            natalCharts: ['chris', 'megan'],
+        });
+        const params = new URLSearchParams(query);
+        expect(params.getAll('natalChart')).toEqual(['chris', 'megan']);
+    });
+
+    it('joins natalPoints and aspects with commas', () => {
+        const { query } = buildCycleQuery({
+            planet: 'saturn', start: '2026-01-01', end: '2027-01-01',
+            natalPoints: ['Sun', 'Mars', 'Ascendant'],
+            aspects: ['conjunction', 'opposition'],
+        });
+        const params = new URLSearchParams(query);
+        expect(params.get('natalPoints')).toBe('Sun,Mars,Ascendant');
+        expect(params.get('aspects')).toBe('conjunction,opposition');
+    });
+
+    it('throws on missing required fields', () => {
+        expect(() => buildCycleQuery({ planet: '', start: 'x', end: 'y' })).toThrow();
+        expect(() => buildCycleQuery({ planet: 'mars', start: '', end: 'y' })).toThrow();
+        expect(() => buildCycleQuery({ planet: 'mars', start: 'x', end: '' })).toThrow();
+    });
+
+    it('skips empty chart names', () => {
+        const { query } = buildCycleQuery({
+            planet: 'venus', start: '2026-01-01', end: '2026-06-01',
+            natalCharts: ['', 'chris', ''],
+        });
+        const params = new URLSearchParams(query);
+        expect(params.getAll('natalChart')).toEqual(['chris']);
+    });
+});
+
+/* ── Settings migration: v1.2 → v1.3 (selectedChart → defaultChart + trackedCharts) ── */
+
+describe('migrateSettings: v1.2 → v1.3 chart handling', () => {
+    it('promotes selectedChart to defaultChart and seeds trackedCharts', () => {
+        const v12 = {
+            serverUrl: 'http://baratie:3000',
+            selectedChart: 'chris',
+            planets: {},
+            aspects: {},
+        };
+        const out = migrateSettings(v12);
+        expect(out.defaultChart).toBe('chris');
+        expect(out.trackedCharts).toEqual(['chris']);
+    });
+
+    it('preserves explicit trackedCharts when given', () => {
+        const v13 = {
+            defaultChart: 'megan',
+            trackedCharts: ['chris', 'megan'],
+            planets: {},
+            aspects: {},
+        };
+        const out = migrateSettings(v13);
+        expect(out.defaultChart).toBe('megan');
+        expect(out.trackedCharts).toEqual(['chris', 'megan']);
+    });
+
+    it('does not duplicate defaultChart in trackedCharts if already present', () => {
+        const v13 = {
+            defaultChart: 'chris',
+            trackedCharts: ['chris', 'megan'],
+            planets: {},
+            aspects: {},
+        };
+        const out = migrateSettings(v13);
+        expect(out.trackedCharts).toEqual(['chris', 'megan']);
+    });
+
+    it('fills cycle defaults when missing', () => {
+        const v12 = { selectedChart: 'chris', planets: {}, aspects: {} };
+        const out = migrateSettings(v12);
+        expect(out.cycleInterval).toBe('daily');
+        expect(out.cycleOrb).toBe(1);
+        expect(out.cycleLookaheadMonths).toBe(6);
     });
 });

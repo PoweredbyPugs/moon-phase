@@ -129,6 +129,42 @@ export interface ChartsListResponse {
     charts: string[];
 }
 
+/* /cycle/:planet response */
+export interface CycleTimelinePoint {
+    date: string;
+    jd?: number;
+    longitude: number;
+    sign: string;
+    degreeInSign: string;
+    isRetrograde: boolean;
+}
+
+export interface CycleNatalEvent {
+    chart: string;
+    transitDate: string;
+    transitLongitude: number;
+    natalPoint: string;
+    natalLongitude: number;
+    aspect: string;
+    orb: number;
+    isExact?: boolean;
+    isApplying?: boolean;
+}
+
+export interface CycleResponse {
+    planet: string;
+    start: string;
+    end: string;
+    interval: string;
+    intervalHours: number;
+    cyclePeriodDays?: number;
+    pointCount: number;
+    timeline: CycleTimelinePoint[];
+    natalCharts: string[];
+    natalEventCount: number;
+    natalEvents: CycleNatalEvent[];
+}
+
 /* ── Settings shape ── */
 
 export interface TechniqueSettings {
@@ -139,26 +175,90 @@ export interface TechniqueSettings {
     dashas: boolean;
 }
 
+export type LLMProviderId = 'off' | 'openai' | 'anthropic' | 'ollama';
+
+export interface LLMSettings {
+    provider: LLMProviderId;
+    model: string;
+    openaiBaseUrl: string;
+    openaiApiKey: string;
+    anthropicBaseUrl: string;
+    anthropicApiKey: string;
+    ollamaBaseUrl: string;
+    maxTokens: number;
+    temperature: number;
+    memoryFolder: string;        // vault folder for saved readings
+    knowledgeLimit: number;      // chunks to retrieve per synthesis call
+}
+
+export type KnowledgeBackendId = 'off' | 'neo4j';
+
+export interface KnowledgeSettings {
+    backend: KnowledgeBackendId;
+    neo4jUri: string;
+    neo4jUser: string;
+    neo4jPassword: string;
+    neo4jIndexName: string;
+    defaultResultLimit: number;
+}
+
 export interface MoonPluginSettings {
     serverUrl: string;
-    selectedChart: string;            // saved-chart name, empty = sky-to-sky mode
-    useNatalChart: boolean;           // when on + selectedChart set, aspect commands hit /transits/:name/now
-    majorOnly: boolean;               // pass major=true to natal transit endpoint
-    natalOrb: number;                 // pass orb=N to natal transit endpoint
+    knowledge: KnowledgeSettings;
+    llm: LLMSettings;
+    // ── Charts ──
+    trackedCharts: string[];          // saved-chart names the user cares about
+    defaultChart: string;             // one of trackedCharts; used when a command needs a single chart
+    // selectedChart is the v1.2 name kept as an alias for defaultChart so existing settings keep working
+    selectedChart?: string;
+    // ── Aspect / transit behavior ──
+    useNatalChart: boolean;           // when on + defaultChart set, aspect commands hit /transits/:name/now
+    majorOnly: boolean;
+    natalOrb: number;
     planets: Record<PlanetName, boolean>;
     aspects: Record<AspectName, boolean>;
+    // ── Techniques ──
     techniques: TechniqueSettings;
-    midpointOrb: number;              // pass orb=N to /midpoint-transits/:name
-    eclipseLookaheadMonths: number;   // how far ahead "Next Eclipse" searches
-    birthDate: string;                // YYYY-MM-DD — used by Ki commands when no chart picked
+    midpointOrb: number;
+    eclipseLookaheadMonths: number;
+    birthDate: string;
+    // ── Cycle defaults ──
+    cycleInterval: 'hourly' | '6h' | 'daily' | 'weekly';
+    cycleOrb: number;
+    cycleLookaheadMonths: number;
 }
 
 export const DEFAULT_SETTINGS: MoonPluginSettings = {
     serverUrl: 'http://localhost:3000',
-    selectedChart: '',
+    trackedCharts: [],
+    defaultChart: '',
     useNatalChart: false,
     majorOnly: true,
     natalOrb: 8,
+    cycleInterval: 'daily',
+    cycleOrb: 1,
+    cycleLookaheadMonths: 6,
+    knowledge: {
+        backend: 'off',
+        neo4jUri: 'bolt://localhost:7687',
+        neo4jUser: 'neo4j',
+        neo4jPassword: '',
+        neo4jIndexName: 'interpretation_text',
+        defaultResultLimit: 5,
+    },
+    llm: {
+        provider: 'off',
+        model: 'claude-sonnet-4-6',
+        openaiBaseUrl: 'https://api.openai.com',
+        openaiApiKey: '',
+        anthropicBaseUrl: 'https://api.anthropic.com',
+        anthropicApiKey: '',
+        ollamaBaseUrl: 'http://localhost:11434',
+        maxTokens: 1500,
+        temperature: 0.7,
+        memoryFolder: 'ObsidianMoon/memory',
+        knowledgeLimit: 6,
+    },
     planets: {
         Sun: true, Moon: true, Mercury: true, Venus: true, Mars: true,
         Jupiter: true, Saturn: true, Uranus: true, Neptune: true, Pluto: true,

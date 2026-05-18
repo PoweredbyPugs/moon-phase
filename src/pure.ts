@@ -26,14 +26,22 @@ export function migrateSettings(raw: any): MoonPluginSettings {
     if (!raw || typeof raw !== 'object') return { ...DEFAULT_SETTINGS };
 
     // v2-ish: already has the new shape — merge over defaults
-    const looksV2 = raw.planets || raw.aspects || raw.selectedChart !== undefined;
+    const looksV2 = raw.planets || raw.aspects || raw.selectedChart !== undefined || raw.defaultChart !== undefined;
     if (looksV2) {
+        // v1.2 → v1.3: selectedChart → defaultChart, seed trackedCharts
+        let defaultChart = raw.defaultChart ?? raw.selectedChart ?? DEFAULT_SETTINGS.defaultChart;
+        let trackedCharts = Array.isArray(raw.trackedCharts) ? raw.trackedCharts.slice() : [];
+        if (defaultChart && !trackedCharts.includes(defaultChart)) trackedCharts.unshift(defaultChart);
         return {
             ...DEFAULT_SETTINGS,
             ...raw,
+            defaultChart,
+            trackedCharts,
             planets: { ...DEFAULT_SETTINGS.planets, ...(raw.planets || {}) },
             aspects: { ...DEFAULT_SETTINGS.aspects, ...(raw.aspects || {}) },
             techniques: { ...DEFAULT_SETTINGS.techniques, ...(raw.techniques || {}) },
+            knowledge: { ...DEFAULT_SETTINGS.knowledge, ...(raw.knowledge || {}) },
+            llm: { ...DEFAULT_SETTINGS.llm, ...(raw.llm || {}) },
         };
     }
 
@@ -149,6 +157,39 @@ export function natalTransitQuery(settings: MoonPluginSettings): string {
     if (Number.isFinite(settings.natalOrb)) params.set('orb', String(settings.natalOrb));
     const qs = params.toString();
     return qs ? `?${qs}` : '';
+}
+
+/* ── /cycle/:planet query string builder ── */
+
+export interface CycleQuery {
+    planet: string;
+    start: string;
+    end: string;
+    interval?: 'hourly' | '6h' | 'daily' | 'weekly';
+    natalCharts?: string[];
+    natalPoints?: string[];
+    aspects?: string[];
+    orb?: number;
+}
+
+export function buildCycleQuery(opts: CycleQuery): { planet: string; query: string } {
+    if (!opts.planet) throw new Error('planet is required');
+    if (!opts.start || !opts.end) throw new Error('start and end are required');
+    const params = new URLSearchParams();
+    params.set('start', opts.start);
+    params.set('end', opts.end);
+    if (opts.interval) params.set('interval', opts.interval);
+    if (Number.isFinite(opts.orb)) params.set('orb', String(opts.orb));
+    if (opts.natalPoints && opts.natalPoints.length) {
+        params.set('natalPoints', opts.natalPoints.join(','));
+    }
+    if (opts.aspects && opts.aspects.length) {
+        params.set('aspects', opts.aspects.join(','));
+    }
+    for (const chart of opts.natalCharts ?? []) {
+        if (chart) params.append('natalChart', chart);
+    }
+    return { planet: opts.planet.toLowerCase(), query: params.toString() };
 }
 
 /* ── /generate-chart body from form values ── */

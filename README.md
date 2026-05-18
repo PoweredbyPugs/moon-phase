@@ -122,35 +122,43 @@ src/__tests__/                # vitest suite (Ki canonical fixture, hexagram int
 
 ## Roadmap
 
-**Phase 1 — Techniques layer ✅ (this release)**
+**Phase 1 — Techniques layer ✅**
 
 - Pure-TS 9 Star Ki + I Ching
-- Plugin commands for new Sweph-server endpoints: midpoint transits, eclipses, dashas
+- Plugin commands for Sweph-server endpoints: midpoint transits, eclipses, dashas
 - Techniques settings tab
-- Tabbed settings UI: General / Natal Chart / Planets / Aspects / Techniques
 
-**Phase 2 — Knowledge layer**
+**Phase 1.5 — Planetary cycles ✅**
 
-- Pluggable knowledge backend (`KnowledgeBackend` interface)
-- External mode: connect to your own Neo4j knowledge graph (embeddings stored as `Interpretation.embedding` vector index)
-- Vault-native fallback: BM25 or local-embedding index over markdown in a configured folder
-- New commands: `Knowledge Search` modal, `Interpret This Placement`, `Ingest Selection`
+- `GET /cycle/:planet` server endpoint: timeline + natal-chart aspect crossings
+- Multi-chart settings (`trackedCharts` + `defaultChart`, "set default", "remove")
+- "Plot Planetary Cycle" modal command
+- `getCycle()` Templater helper for daily-ritual roll-ups
 
-**Phase 3 — Synthesis layer**
+**Phase 2 — Knowledge layer ✅**
 
-- LLM provider plumbing (OpenAI / Anthropic / Ollama / generic OpenAI-compatible)
-- Prompt templates lifted from the Stella project (editable in vault)
-- New commands: `Insert Chart Reading`, `Discover Patterns for Chart`, `Reflect on This Reading`
-- Memory loop: validated readings saved to a vault folder, surfaced by `recall`
+- Pluggable `KnowledgeBackend` interface
+- Neo4j backend (full-text search over `Interpretation` nodes; Stella-compatible schema)
+- "Knowledge Search" modal + "Interpret Selected Placement" command
+- Placement parser: turns "♂ Capricorn 15˚" / "Venus conjunct Pluto" into a structured query
+
+**Phase 3 — Synthesis layer ✅**
+
+- LLM provider plumbing: OpenAI-compatible, Anthropic, Ollama
+- "Insert Chart Reading", "Discover Patterns", "Interpret Selected Placement (LLM)" commands
+- Prompt templates inspired by Stella
+- Memory loop: every reading saved as a markdown note in a vault folder, with frontmatter for Dataview
 
 **Phase 4 — One-command Sweph-server setup**
 
-- Settings button: "Install Sweph-server here" — provisions a Docker container locally, downloads ephemeris files, runs container, writes URL into settings. Removes the manual setup step entirely.
+- Settings button: "Install Sweph-server here" — provisions Docker locally, downloads ephemeris files, writes URL into settings
 
 **Phase 5 — Ergonomics + ecosystem**
 
+- Animated cycle view (using `/cycle/:planet` timeline data)
 - Hexagram modal with line-by-line interpretation
 - "Aspect right now" status bar item
+- Vault-native fallback for knowledge layer (BM25/TF-IDF over markdown)
 - Community-plugin store submission
 
 ---
