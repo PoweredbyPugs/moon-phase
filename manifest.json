@@ -1,9 +1,9 @@
 {
   "id": "obsidian-moon",
-  "name": "Moon Phase",
-  "version": "1.1.0",
+  "name": "Obsidian Moon",
+  "version": "1.2.0",
   "minAppVersion": "0.15.0",
-  "description": "Moon phase, planetary positions, aspects, and natal-chart transits via a local Swiss Ephemeris server",
+  "description": "Astrology & divination toolkit — moon phase, planetary positions, aspects, natal transits, 9 Star Ki, I Ching, midpoints, eclipses, and dashas via a local Sweph-server backend",
   "author": "poweredbypugs",
   "isDesktopOnly": false,
   "authorUrl": "https://github.com/poweredbypugs",

@@ -1,34 +1,36 @@
-# Obsidian Moon Plugin
+# Obsidian Moon
 
-A thin Obsidian client for the [Sweph Astrological API](https://github.com/PoweredbyPugs/Sweph-server) — pulls live moon-phase, planetary-position, aspect, and **transit-to-natal-chart** data from your local Swiss Ephemeris server and drops it into your notes.
+An astrology and divination toolkit for Obsidian — moon phase, planetary positions, aspects, transits to your natal chart, 9 Star Ki, I Ching hexagram casting, midpoints, eclipses, and Vimshottari dashas. Everything lands as text at the cursor, plays nicely with Templater, and is built around a tabbed settings UI.
+
+## ⚠️ Required dependency: Sweph-server
+
+Obsidian Moon is a thin client. All ephemeris and chart math happens on a small Node/Express service called **[Sweph-server](https://github.com/PoweredbyPugs/Sweph-server)**. You need one running and reachable from your Obsidian machine. It ships with a Dockerfile and `docker compose` setup; the README there has full instructions.
+
+> **Roadmap:** a future release of Obsidian Moon will bundle a one-click setup script that provisions Sweph-server on your machine via Docker so you don't have to clone and run it yourself.
+
+Once it's running, point **Settings → Obsidian Moon → General → Server URL** at it (e.g. `http://localhost:3000` or, if you're on a homelab/tailnet, `http://yourhost:3000`).
+
+---
 
 ## Features
 
 - Current moon phase + sign + exact degree
-- Next major moon phase in the current week
+- Next major moon phase this week, exact timestamp
 - All planetary positions or a single planet, with retrograde marks
 - All current aspects, filtered by planet or aspect type
-- **Natal-chart mode** — pick a chart you've saved on the server and aspect commands return transits to *your* planets via `/transits/:name/now`
+- **Natal-chart mode** — pick a saved chart and aspect commands return transits to *your* planets via `/transits/:name/now`
 - **Create new charts from settings** — date / time / location-search form posts to `/generate-chart`
-- Templater-friendly: every getter is exposed on `window.MoonPhasePlugin`
-- Tabbed settings UI: General · Natal Chart · Planets · Aspects
+- **9 Star Ki** — today's Ki cascade and natal Ki personal-cycle (pure client-side)
+- **I Ching** — three-coin cast, primary + relating hexagrams, King Wen names + judgments (pure client-side)
+- **Midpoint transits**, **eclipses**, **Vimshottari dashas** — opt-in via the Techniques tab, powered by Sweph-server endpoints
+- Templater-friendly: every getter exposed on `window.ObsidianMoon` (and `window.MoonPhasePlugin` as an alias)
+- Tabbed settings UI: **General · Natal Chart · Planets · Aspects · Techniques**
 
-## Setup
-
-### 1. Run the Sweph Astrological API server
-
-The plugin is a thin client — all calculations happen in a separate Node/Express server. Source lives at **`PoweredbyPugs/Sweph-server`**. See that repo's README for Docker deployment.
-
-### 2. Configure the plugin
-
-Open **Settings → Community plugins → Moon Phase**.
-
-- **General** — point the server URL at your Sweph instance (e.g. `http://baratie:3000`). Click **Test** to confirm reachability.
-- **Natal Chart** — pick a saved chart from the dropdown (loaded live via `GET /charts`), or fill in the **Create a new chart** form to add one.
-- **Planets** — toggle which planets appear in position lists and aspect calculations.
-- **Aspects** — toggle which aspect types are shown.
+---
 
 ## Commands
+
+### Sky & natal
 
 | Command | Output |
 |---|---|
@@ -36,16 +38,29 @@ Open **Settings → Community plugins → Moon Phase**.
 | Current Moon Degree | `🌕 Libra 15.2˚` |
 | Weekly Phase | Next major phase this week with its sign |
 | All Planetary Positions | One line per visible planet |
-| `<Planet>` Position | A single planet's sign + degree |
+| *Planet* Position | A single planet's sign + degree |
 | All Current Aspects | All visible aspects (sky-to-sky, **or** transit-to-natal when natal mode is on) |
-| `<Planet>` Aspects | Aspects involving that planet |
-| `<Aspect>` Aspects | Aspects of one type (Conjunction / Square / etc.) |
+| *Planet* Aspects | Aspects involving that planet |
+| *Aspect* Aspects | Aspects of one type (Conjunction / Square / etc.) |
 
-When **Use natal chart for transits** is on and a chart is selected, aspect commands hit `GET /transits/:name/now?major=…&orb=…` and return transits between the current sky and your saved natal chart.
+### Techniques (toggle in settings to show)
+
+| Command | Output |
+|---|---|
+| Cast Hexagram | I Ching cast with primary + relating hexagram |
+| Today's 9 Star Ki | Year / Month / Third Ki for today |
+| Natal 9 Star Ki | Birth Ki + today's personal cycle |
+| Midpoint Transits | Current transits aspecting natal midpoints |
+| Next Eclipse | Next solar or lunar eclipse within configured lookahead |
+| Vimshottari Dashas | Vedic dasha periods for the selected chart |
+
+---
 
 ## Templater integration
 
-The plugin exposes its API on `window.MoonPhasePlugin`:
+```js
+window.ObsidianMoon
+```
 
 | Function | Returns |
 |---|---|
@@ -53,24 +68,35 @@ The plugin exposes its API on `window.MoonPhasePlugin`:
 | `getCurrentMoonDegree()` | `"🌕 Libra 15.2˚"` |
 | `getWeeklyPhase()` | `"🌓 Capricorn"` |
 | `getPlanetaryData()` | `{localEasternTime, planets: [...]}` |
-| `getAspectsData()` | `{localEasternTime, aspects: [...]}` — always sky-to-sky |
-| `getNatalTransits(chartName?)` | Full natal-transit response (with phase, isExact, isTight, etc.) |
-| `getNatalChart(chartName?)` | The full stored natal chart record |
-| `listSavedCharts()` | Array of saved-chart names |
+| `getAspectsData()` | `{localEasternTime, aspects: [...]}` |
+| `getNatalTransits(chartName?)` | Rich natal-transit response (with phase, isExact, isTight, …) |
+| `getNatalChart(chartName?)` | Full saved natal chart record |
+| `listSavedCharts()` | Saved-chart names |
+| `getTodaysKi()` | Markdown report for today's Ki |
+| `getNatalKi()` | Birth Ki + today's personal cycle |
+| `getDailyHexagram()` | Hexagram cast as markdown |
+| `getMidpointTransits(chartName?)` | Markdown list of current midpoint transits |
+| `getNextEclipse()` | One-line "Next eclipse: …" |
+| `getDashas(chartName?, levels?)` | Markdown list of dasha periods |
 
-### Example daily note template
+### Example daily-note template
 
-```
+```markdown
 ---
 date: <% tp.date.now("YYYY-MM-DD") %>
-moon: <% await window.MoonPhasePlugin.getCurrentMoonDegree() %>
+moon: <% await window.ObsidianMoon.getCurrentMoonDegree() %>
+ki:   <% (await window.ObsidianMoon.getTodaysKi()).split('\n')[2] %>
 ---
 
 # <% tp.date.now("MMMM D, YYYY") %>
 
-Today's moon is <% await window.MoonPhasePlugin.getCurrentMoonDegree() %>
-Major phase this week: <% await window.MoonPhasePlugin.getWeeklyPhase() %>
+Today's moon: <% await window.ObsidianMoon.getCurrentMoonDegree() %>
+Major phase this week: <% await window.ObsidianMoon.getWeeklyPhase() %>
+
+<% await window.ObsidianMoon.getDailyHexagram() %>
 ```
+
+---
 
 ## Development
 
@@ -78,23 +104,60 @@ Major phase this week: <% await window.MoonPhasePlugin.getWeeklyPhase() %>
 npm install
 npm run dev      # watch-mode build
 npm run build    # production build
-npm test         # vitest run
+npm test         # vitest run — 53 tests
 ```
 
-Pure logic (settings migration, URL building, response normalization) lives in `src/pure.ts` and is exercised by `src/__tests__/pure.test.ts`. Obsidian-coupled code lives in `main.ts`.
+Code layout:
 
-## Endpoints used (for reference)
+```
+main.ts                       # Obsidian-coupled glue: commands, settings UI, HTTP
+src/types.ts                  # Shared type defs + constants
+src/pure.ts                   # Pure logic: settings migration, URL building, filters
+src/techniques/ki.ts          # 9 Star Ki (pure TS, no server)
+src/techniques/hexagram.ts    # I Ching cast + King Wen lookup (pure TS, no server)
+src/__tests__/                # vitest suite (Ki canonical fixture, hexagram integrity, …)
+```
 
-All paths are documented live at `GET /api-info` on the server.
+---
 
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/moon-now` | Current moon phase / sign / degree |
-| GET | `/planets-now` | All planetary positions |
-| GET | `/aspects-now` | Sky-to-sky aspects |
-| GET | `/weekly-major-phase` | Major moon phase this week |
-| GET | `/charts` | List saved chart names |
-| GET | `/chart/:name` | Full natal chart record |
-| POST | `/generate-chart` | Create + optionally save a chart |
-| GET | `/transits/:name/now?major=true&orb=N` | Transits to a saved natal chart |
-| GET | `/test` | Health check |
+## Roadmap
+
+**Phase 1 — Techniques layer ✅ (this release)**
+
+- Pure-TS 9 Star Ki + I Ching
+- Plugin commands for new Sweph-server endpoints: midpoint transits, eclipses, dashas
+- Techniques settings tab
+- Tabbed settings UI: General / Natal Chart / Planets / Aspects / Techniques
+
+**Phase 2 — Knowledge layer**
+
+- Pluggable knowledge backend (`KnowledgeBackend` interface)
+- External mode: connect to your own Neo4j knowledge graph (embeddings stored as `Interpretation.embedding` vector index)
+- Vault-native fallback: BM25 or local-embedding index over markdown in a configured folder
+- New commands: `Knowledge Search` modal, `Interpret This Placement`, `Ingest Selection`
+
+**Phase 3 — Synthesis layer**
+
+- LLM provider plumbing (OpenAI / Anthropic / Ollama / generic OpenAI-compatible)
+- Prompt templates lifted from the Stella project (editable in vault)
+- New commands: `Insert Chart Reading`, `Discover Patterns for Chart`, `Reflect on This Reading`
+- Memory loop: validated readings saved to a vault folder, surfaced by `recall`
+
+**Phase 4 — One-command Sweph-server setup**
+
+- Settings button: "Install Sweph-server here" — provisions a Docker container locally, downloads ephemeris files, runs container, writes URL into settings. Removes the manual setup step entirely.
+
+**Phase 5 — Ergonomics + ecosystem**
+
+- Hexagram modal with line-by-line interpretation
+- "Aspect right now" status bar item
+- Community-plugin store submission
+
+---
+
+## Credits
+
+- **Swiss Ephemeris** by Astrodienst, via [pyswisseph](https://github.com/astrorigin/pyswisseph) / [sweph npm](https://www.npmjs.com/package/sweph) — the engine behind every position and transit
+- **Stella MCP** ([PoweredbyPugs/Stella-mcp](https://github.com/PoweredbyPugs/Stella-mcp)) — the techniques in Phase 1 are ports of Stella's Python implementations
+- **OpenStreetMap / Nominatim** — location search in the chart-creation form
+- I Ching judgments distilled from Wilhelm/Baynes (public domain)

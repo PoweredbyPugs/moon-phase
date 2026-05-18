@@ -131,6 +131,14 @@ export interface ChartsListResponse {
 
 /* ── Settings shape ── */
 
+export interface TechniqueSettings {
+    ki: boolean;
+    hexagram: boolean;
+    midpoints: boolean;
+    eclipses: boolean;
+    dashas: boolean;
+}
+
 export interface MoonPluginSettings {
     serverUrl: string;
     selectedChart: string;            // saved-chart name, empty = sky-to-sky mode
@@ -139,6 +147,10 @@ export interface MoonPluginSettings {
     natalOrb: number;                 // pass orb=N to natal transit endpoint
     planets: Record<PlanetName, boolean>;
     aspects: Record<AspectName, boolean>;
+    techniques: TechniqueSettings;
+    midpointOrb: number;              // pass orb=N to /midpoint-transits/:name
+    eclipseLookaheadMonths: number;   // how far ahead "Next Eclipse" searches
+    birthDate: string;                // YYYY-MM-DD — used by Ki commands when no chart picked
 }
 
 export const DEFAULT_SETTINGS: MoonPluginSettings = {
@@ -156,6 +168,16 @@ export const DEFAULT_SETTINGS: MoonPluginSettings = {
         Quincunx: false, 'Semi-sextile': false, 'Semi-square': false,
         Sesquiquadrate: false, Quintile: false,
     },
+    techniques: {
+        ki: true,
+        hexagram: true,
+        midpoints: false,
+        eclipses: false,
+        dashas: false,
+    },
+    midpointOrb: 2,
+    eclipseLookaheadMonths: 12,
+    birthDate: '',
 };
 
 /* ── Body shape for POST /generate-chart on the real server ── */

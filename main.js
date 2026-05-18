@@ -122,7 +122,17 @@ var DEFAULT_SETTINGS = {
     "Semi-square": false,
     Sesquiquadrate: false,
     Quintile: false
-  }
+  },
+  techniques: {
+    ki: true,
+    hexagram: true,
+    midpoints: false,
+    eclipses: false,
+    dashas: false
+  },
+  midpointOrb: 2,
+  eclipseLookaheadMonths: 12,
+  birthDate: ""
 };
 
 // src/pure.ts
@@ -143,7 +153,8 @@ function migrateSettings(raw) {
       ...DEFAULT_SETTINGS,
       ...raw,
       planets: { ...DEFAULT_SETTINGS.planets, ...raw.planets || {} },
-      aspects: { ...DEFAULT_SETTINGS.aspects, ...raw.aspects || {} }
+      aspects: { ...DEFAULT_SETTINGS.aspects, ...raw.aspects || {} },
+      techniques: { ...DEFAULT_SETTINGS.techniques, ...raw.techniques || {} }
     };
   }
   const planetMap = {
@@ -307,6 +318,296 @@ function formatSkyAspectLine(a) {
   return `${g1}${r1} ${a.aspectSymbol} ${g2}${r2}`;
 }
 
+// src/techniques/ki.ts
+var KI_TRIGRAMS_DATA = {
+  1: { name: "Water", trigram: "\u2635", chinese: "Kan", element: "Water" },
+  2: { name: "Earth", trigram: "\u2637", chinese: "Kun", element: "Earth" },
+  3: { name: "Thunder", trigram: "\u2633", chinese: "Zhen", element: "Wood" },
+  4: { name: "Wind", trigram: "\u2634", chinese: "Xun", element: "Wood" },
+  5: { name: "Center", trigram: "\u262F", chinese: "Tai Chi", element: "Earth" },
+  6: { name: "Heaven", trigram: "\u2630", chinese: "Qian", element: "Metal" },
+  7: { name: "Lake", trigram: "\u2631", chinese: "Dui", element: "Metal" },
+  8: { name: "Mountain", trigram: "\u2636", chinese: "Gen", element: "Earth" },
+  9: { name: "Fire", trigram: "\u2632", chinese: "Li", element: "Fire" }
+};
+function kiTrigram(n) {
+  return { number: n, ...KI_TRIGRAMS_DATA[n] };
+}
+var YEAR_TABLE = {
+  1: [1909, 1918, 1927, 1936, 1945, 1954, 1963, 1972, 1981, 1990, 1999, 2008, 2017, 2026, 2035, 2044],
+  2: [1908, 1917, 1926, 1935, 1944, 1953, 1962, 1971, 1980, 1989, 1998, 2007, 2016, 2025, 2034, 2043],
+  3: [1907, 1916, 1925, 1934, 1943, 1952, 1961, 1970, 1979, 1988, 1997, 2006, 2015, 2024, 2033, 2042],
+  4: [1906, 1915, 1924, 1933, 1942, 1951, 1960, 1969, 1978, 1987, 1996, 2005, 2014, 2023, 2032, 2041],
+  5: [1905, 1914, 1923, 1932, 1941, 1950, 1959, 1968, 1977, 1986, 1995, 2004, 2013, 2022, 2031, 2040],
+  6: [1904, 1913, 1922, 1931, 1940, 1949, 1958, 1967, 1976, 1985, 1994, 2003, 2012, 2021, 2030, 2039],
+  7: [1903, 1912, 1921, 1930, 1939, 1948, 1957, 1966, 1975, 1984, 1993, 2002, 2011, 2020, 2029, 2038],
+  8: [1902, 1911, 1920, 1929, 1938, 1947, 1956, 1965, 1974, 1983, 1992, 2001, 2010, 2019, 2028, 2037],
+  9: [1901, 1910, 1919, 1928, 1937, 1946, 1955, 1964, 1973, 1982, 1991, 2e3, 2009, 2018, 2027, 2036]
+};
+var YEAR_TO_KI = {};
+for (const [ki, years] of Object.entries(YEAR_TABLE)) {
+  for (const y of years)
+    YEAR_TO_KI[y] = Number(ki);
+}
+var MONTH_TABLE = [
+  { start: [2, 4], end: [3, 5], values: [187, 225, 353, 481, 528, 656, 784, 822, 959] },
+  { start: [3, 6], end: [4, 4], values: [178, 216, 344, 472, 519, 647, 775, 813, 941] },
+  { start: [4, 5], end: [5, 4], values: [169, 297, 335, 463, 591, 638, 766, 894, 932] },
+  { start: [5, 5], end: [6, 5], values: [151, 288, 326, 454, 582, 629, 757, 885, 923] },
+  { start: [6, 6], end: [7, 6], values: [142, 279, 317, 445, 573, 611, 748, 876, 914] },
+  { start: [7, 7], end: [8, 6], values: [133, 261, 398, 436, 564, 692, 739, 867, 995] },
+  { start: [8, 7], end: [9, 7], values: [124, 252, 389, 427, 555, 683, 721, 858, 986] },
+  { start: [9, 8], end: [10, 7], values: [115, 243, 371, 418, 546, 674, 712, 849, 977] },
+  { start: [10, 8], end: [11, 6], values: [196, 234, 362, 499, 537, 665, 793, 831, 968] },
+  { start: [11, 7], end: [12, 6], values: [187, 225, 353, 481, 528, 656, 784, 822, 959] },
+  { start: [12, 7], end: [1, 4], values: [178, 216, 344, 472, 519, 647, 775, 813, 941] },
+  { start: [1, 5], end: [2, 3], values: [169, 297, 335, 463, 591, 638, 766, 894, 932] }
+];
+var FLYING_SEQUENCE = [5, 6, 7, 8, 9, 1, 2, 3, 4];
+var NUM_TO_IDX = {};
+FLYING_SEQUENCE.forEach((n, i) => {
+  NUM_TO_IDX[n] = i;
+});
+function dateInRange(month, day, start, end) {
+  const dateVal = month * 100 + day;
+  const startVal = start[0] * 100 + start[1];
+  const endVal = end[0] * 100 + end[1];
+  return startVal <= endVal ? dateVal >= startVal && dateVal <= endVal : dateVal >= startVal || dateVal <= endVal;
+}
+function calculateKiYear(year, month, day) {
+  let effectiveYear = year;
+  if (month < 2 || month === 2 && day < 4)
+    effectiveYear = year - 1;
+  if (YEAR_TO_KI[effectiveYear] !== void 0)
+    return YEAR_TO_KI[effectiveYear];
+  const offset = ((effectiveYear - 2026) % 9 + 9) % 9;
+  const ki = 1 - offset;
+  return ki <= 0 ? ki + 9 : ki;
+}
+function calculateKiAll(year, month, day) {
+  const yearKi = calculateKiYear(year, month, day);
+  for (const r of MONTH_TABLE) {
+    if (dateInRange(month, day, r.start, r.end)) {
+      const value = r.values[yearKi - 1];
+      const s = String(value);
+      const monthKi = Number(s[1]);
+      const thirdKi = Number(s[2]);
+      return [yearKi, monthKi, thirdKi];
+    }
+  }
+  return [yearKi, 0, 0];
+}
+function calculateKi(d) {
+  const y = d.getFullYear();
+  const m = d.getMonth() + 1;
+  const day = d.getDate();
+  const [yearKi, monthKi, thirdKi] = calculateKiAll(y, m, day);
+  return {
+    date: isoDate(d),
+    yearKi,
+    monthKi,
+    thirdKi,
+    sequence: `${yearKi}.${monthKi}.${thirdKi}`,
+    year: kiTrigram(yearKi),
+    month: kiTrigram(monthKi),
+    third: kiTrigram(thirdKi)
+  };
+}
+function calculatePersonalCycle(natalYearKi, target) {
+  const global = calculateKi(target);
+  const shiftYear = -NUM_TO_IDX[global.yearKi];
+  const personalYear = FLYING_SEQUENCE[((NUM_TO_IDX[natalYearKi] + shiftYear) % 9 + 9) % 9];
+  const shiftMonth = -NUM_TO_IDX[global.monthKi];
+  const personalMonth = FLYING_SEQUENCE[((NUM_TO_IDX[natalYearKi] + shiftMonth) % 9 + 9) % 9];
+  return {
+    date: isoDate(target),
+    natalYearKi,
+    globalYear: global.yearKi,
+    globalMonth: global.monthKi,
+    personalYear,
+    personalMonth,
+    personalYearInfo: kiTrigram(personalYear),
+    personalMonthInfo: kiTrigram(personalMonth)
+  };
+}
+function formatKiReport(ki) {
+  const line = (n, kt, label) => `**${label}: ${n} ${kt.trigram} ${kt.name}** (${kt.chinese}) \u2014 ${kt.element}`;
+  return [
+    `# 9 Star Ki for ${ki.date}`,
+    "",
+    `**Ki Sequence:** ${ki.sequence}`,
+    "",
+    line(ki.yearKi, ki.year, "Year Ki"),
+    line(ki.monthKi, ki.month, "Month Ki"),
+    line(ki.thirdKi, ki.third, "Third Ki")
+  ].join("\n");
+}
+function isoDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+// src/techniques/hexagram.ts
+var HEXAGRAMS = {
+  1: { name: "The Creative", chinese: "Qian", upper: "Heaven", lower: "Heaven", judgment: "Sublime success through perseverance." },
+  2: { name: "The Receptive", chinese: "Kun", upper: "Earth", lower: "Earth", judgment: "Sublime success; receptive devotion brings reward." },
+  3: { name: "Difficulty at the Beginning", chinese: "Zhun", upper: "Water", lower: "Thunder", judgment: "It furthers one to appoint helpers; do not act alone." },
+  4: { name: "Youthful Folly", chinese: "Meng", upper: "Mountain", lower: "Water", judgment: "The youth must seek the master; the master does not chase." },
+  5: { name: "Waiting", chinese: "Xu", upper: "Water", lower: "Heaven", judgment: "Wait sincerely; crossing the great water furthers." },
+  6: { name: "Conflict", chinese: "Song", upper: "Heaven", lower: "Water", judgment: "Halfway brings good fortune; carrying it through, misfortune." },
+  7: { name: "The Army", chinese: "Shi", upper: "Earth", lower: "Water", judgment: "The army needs a strong leader; perseverance brings reward." },
+  8: { name: "Holding Together", chinese: "Bi", upper: "Water", lower: "Earth", judgment: "Union sought now brings good fortune; latecomers, misfortune." },
+  9: { name: "Small Taming Power", chinese: "Xiao Chu", upper: "Wind", lower: "Heaven", judgment: "Dense clouds, no rain; the small holds back the great." },
+  10: { name: "Treading", chinese: "Lu", upper: "Heaven", lower: "Lake", judgment: "Treading on the tiger's tail; it does not bite." },
+  11: { name: "Peace", chinese: "Tai", upper: "Earth", lower: "Heaven", judgment: "The small departs, the great approaches." },
+  12: { name: "Standstill", chinese: "Pi", upper: "Heaven", lower: "Earth", judgment: "Evil people do not further the perseverance of the superior." },
+  13: { name: "Fellowship with Others", chinese: "Tong Ren", upper: "Heaven", lower: "Fire", judgment: "Fellowship in the open; crossing the great water furthers." },
+  14: { name: "Great Possession", chinese: "Da You", upper: "Fire", lower: "Heaven", judgment: "Supreme success; modesty preserves the great." },
+  15: { name: "Modesty", chinese: "Qian", upper: "Earth", lower: "Mountain", judgment: "The superior person carries things through; success." },
+  16: { name: "Enthusiasm", chinese: "Yu", upper: "Thunder", lower: "Earth", judgment: "It furthers to install helpers and to set armies marching." },
+  17: { name: "Following", chinese: "Sui", upper: "Lake", lower: "Thunder", judgment: "Supreme success; perseverance brings reward." },
+  18: { name: "Work on the Decayed", chinese: "Gu", upper: "Mountain", lower: "Wind", judgment: "Crossing the great water furthers; three days before, three days after." },
+  19: { name: "Approach", chinese: "Lin", upper: "Earth", lower: "Lake", judgment: "Supreme success; in the eighth month, misfortune." },
+  20: { name: "Contemplation", chinese: "Guan", upper: "Wind", lower: "Earth", judgment: "The ablution has been made; the offering not yet brought." },
+  21: { name: "Biting Through", chinese: "Shi He", upper: "Fire", lower: "Thunder", judgment: "Success; it is favorable to let justice be administered." },
+  22: { name: "Grace", chinese: "Bi", upper: "Mountain", lower: "Fire", judgment: "Small success in small matters." },
+  23: { name: "Splitting Apart", chinese: "Bo", upper: "Mountain", lower: "Earth", judgment: "It does not further to go anywhere." },
+  24: { name: "Return", chinese: "Fu", upper: "Earth", lower: "Thunder", judgment: "Friends come without blame; the way returns on the seventh day." },
+  25: { name: "Innocence", chinese: "Wu Wang", upper: "Heaven", lower: "Thunder", judgment: "If the act is not right, misfortune; nowhere furthers." },
+  26: { name: "Great Taming Power", chinese: "Da Chu", upper: "Mountain", lower: "Heaven", judgment: "Perseverance furthers; crossing the great water furthers." },
+  27: { name: "Nourishment", chinese: "Yi", upper: "Mountain", lower: "Thunder", judgment: "Pay heed to what gives nourishment, and what one seeks to fill the mouth." },
+  28: { name: "Preponderance of the Great", chinese: "Da Guo", upper: "Lake", lower: "Wind", judgment: "The ridgepole sags; success in undertakings." },
+  29: { name: "The Abysmal", chinese: "Kan", upper: "Water", lower: "Water", judgment: "If sincere, success in the heart; actions bring esteem." },
+  30: { name: "The Clinging", chinese: "Li", upper: "Fire", lower: "Fire", judgment: "Perseverance furthers; caring for the cow brings good fortune." },
+  31: { name: "Influence", chinese: "Xian", upper: "Lake", lower: "Mountain", judgment: "Success; perseverance furthers. Taking a maiden brings good fortune." },
+  32: { name: "Duration", chinese: "Heng", upper: "Thunder", lower: "Wind", judgment: "Success without blame; perseverance furthers a goal." },
+  33: { name: "Retreat", chinese: "Dun", upper: "Heaven", lower: "Mountain", judgment: "Success in small matters; perseverance furthers." },
+  34: { name: "The Power of the Great", chinese: "Da Zhuang", upper: "Thunder", lower: "Heaven", judgment: "Perseverance furthers." },
+  35: { name: "Progress", chinese: "Jin", upper: "Fire", lower: "Earth", judgment: "The powerful prince receives horses in abundance." },
+  36: { name: "Darkening of the Light", chinese: "Ming Yi", upper: "Earth", lower: "Fire", judgment: "In adversity, perseverance furthers." },
+  37: { name: "The Family", chinese: "Jia Ren", upper: "Wind", lower: "Fire", judgment: "The perseverance of the woman furthers." },
+  38: { name: "Opposition", chinese: "Kui", upper: "Fire", lower: "Lake", judgment: "In small matters, good fortune." },
+  39: { name: "Obstruction", chinese: "Jian", upper: "Water", lower: "Mountain", judgment: "The southwest furthers; seeing the great person furthers." },
+  40: { name: "Deliverance", chinese: "Xie", upper: "Thunder", lower: "Water", judgment: "The southwest furthers; if there is no place to go, return brings fortune." },
+  41: { name: "Decrease", chinese: "Sun", upper: "Mountain", lower: "Lake", judgment: "If sincere, supreme good fortune without blame." },
+  42: { name: "Increase", chinese: "Yi", upper: "Wind", lower: "Thunder", judgment: "It furthers to undertake something; crossing the great water furthers." },
+  43: { name: "Breakthrough", chinese: "Guai", upper: "Lake", lower: "Heaven", judgment: "A resolute announcement at court; there is danger." },
+  44: { name: "Coming to Meet", chinese: "Gou", upper: "Heaven", lower: "Wind", judgment: "The maiden is powerful; do not marry such a maiden." },
+  45: { name: "Gathering Together", chinese: "Cui", upper: "Lake", lower: "Earth", judgment: "The king approaches his temple; seeing the great person furthers." },
+  46: { name: "Pushing Upward", chinese: "Sheng", upper: "Earth", lower: "Wind", judgment: "Supreme success; departure toward the south brings fortune." },
+  47: { name: "Oppression", chinese: "Kun", upper: "Lake", lower: "Water", judgment: "Success; for the great person, good fortune without blame." },
+  48: { name: "The Well", chinese: "Jing", upper: "Water", lower: "Wind", judgment: "The town may change; the well does not change." },
+  49: { name: "Revolution", chinese: "Ge", upper: "Lake", lower: "Fire", judgment: "On your own day, you are believed; supreme success; perseverance furthers." },
+  50: { name: "The Caldron", chinese: "Ding", upper: "Fire", lower: "Wind", judgment: "Supreme good fortune; success." },
+  51: { name: "The Arousing", chinese: "Zhen", upper: "Thunder", lower: "Thunder", judgment: "Shock terrifies for a hundred miles; the offerer does not drop the sacrificial spoon." },
+  52: { name: "Keeping Still", chinese: "Gen", upper: "Mountain", lower: "Mountain", judgment: "Keeping the back still; not perceiving the body." },
+  53: { name: "Development", chinese: "Jian", upper: "Wind", lower: "Mountain", judgment: "The maiden is given in marriage; good fortune; perseverance furthers." },
+  54: { name: "The Marrying Maiden", chinese: "Gui Mei", upper: "Thunder", lower: "Lake", judgment: "Undertakings bring misfortune; nothing that would further." },
+  55: { name: "Abundance", chinese: "Feng", upper: "Thunder", lower: "Fire", judgment: "The king attains abundance; be not sad. Be like the sun at midday." },
+  56: { name: "The Wanderer", chinese: "Lu", upper: "Fire", lower: "Mountain", judgment: "Success in small things; perseverance brings fortune to the wanderer." },
+  57: { name: "The Gentle", chinese: "Xun", upper: "Wind", lower: "Wind", judgment: "Success through what is small; seeing the great person furthers." },
+  58: { name: "The Joyous", chinese: "Dui", upper: "Lake", lower: "Lake", judgment: "Success; perseverance is favorable." },
+  59: { name: "Dispersion", chinese: "Huan", upper: "Wind", lower: "Water", judgment: "The king approaches his temple; crossing the great water furthers." },
+  60: { name: "Limitation", chinese: "Jie", upper: "Water", lower: "Lake", judgment: "Galling limitation must not be persevered in." },
+  61: { name: "Inner Truth", chinese: "Zhong Fu", upper: "Wind", lower: "Lake", judgment: "Pigs and fishes; crossing the great water furthers." },
+  62: { name: "Preponderance of the Small", chinese: "Xiao Guo", upper: "Thunder", lower: "Mountain", judgment: "Small things may be done; great things should not be done." },
+  63: { name: "After Completion", chinese: "Ji Ji", upper: "Water", lower: "Fire", judgment: "Success in small matters; perseverance furthers; in the beginning, fortune; at the end, disorder." },
+  64: { name: "Before Completion", chinese: "Wei Ji", upper: "Fire", lower: "Water", judgment: "Success; the little fox is almost across when his tail gets wet." }
+};
+var TRIGRAM_BITS = {
+  Heaven: "111",
+  Earth: "000",
+  Lake: "110",
+  Mountain: "001",
+  Fire: "101",
+  Water: "010",
+  Thunder: "100",
+  Wind: "011"
+};
+var KING_WEN = {};
+for (const [numStr, h] of Object.entries(HEXAGRAMS)) {
+  const lower = TRIGRAM_BITS[h.lower];
+  const upper = TRIGRAM_BITS[h.upper];
+  if (!lower || !upper)
+    throw new Error(`Unknown trigram for hex ${numStr}`);
+  KING_WEN[lower + upper] = Number(numStr);
+}
+function getHexagram(num) {
+  const h = HEXAGRAMS[num];
+  if (!h)
+    throw new Error(`Unknown hexagram ${num}`);
+  return { number: num, ...h };
+}
+function castLine(rng = Math.random) {
+  const coin = () => rng() < 0.5 ? 2 : 3;
+  const sum = coin() + coin() + coin();
+  return {
+    value: sum,
+    yin: sum === 6 || sum === 8,
+    changing: sum === 6 || sum === 9
+  };
+}
+function hexagramNumberFromLines(lines, useChangedLines = false) {
+  const bits = lines.map((l) => {
+    const yin = useChangedLines && l.changing ? !l.yin : l.yin;
+    return yin ? "0" : "1";
+  }).join("");
+  return hexagramNumberFromBits(bits);
+}
+function hexagramNumberFromBits(bits) {
+  const num = KING_WEN[bits];
+  if (!num)
+    throw new Error(`No hexagram for binary ${bits}`);
+  return num;
+}
+function castHexagram(rng = Math.random) {
+  const lines = Array.from({ length: 6 }, () => castLine(rng));
+  const primaryNum = hexagramNumberFromLines(lines, false);
+  const changingLines = lines.map((l, i) => l.changing ? i + 1 : 0).filter((n) => n > 0);
+  const relating = changingLines.length > 0 ? getHexagram(hexagramNumberFromLines(lines, true)) : null;
+  return { lines, primary: getHexagram(primaryNum), relating, changingLines };
+}
+var LINE_GLYPHS = {
+  yangStable: "\u2501\u2501\u2501\u2501\u2501\u2501\u2501",
+  yinStable: "\u2501\u2501   \u2501\u2501",
+  yangChange: "\u2501\u2501\u2501\u25CB\u2501\u2501\u2501",
+  yinChange: "\u2501\u2501 x \u2501\u2501"
+};
+function renderHexagram(lines) {
+  return [...lines].reverse().map((l) => {
+    if (l.value === 9)
+      return LINE_GLYPHS.yangChange;
+    if (l.value === 6)
+      return LINE_GLYPHS.yinChange;
+    if (l.value === 7)
+      return LINE_GLYPHS.yangStable;
+    return LINE_GLYPHS.yinStable;
+  }).join("\n");
+}
+function formatCast(cast) {
+  const lines = [
+    `# Hexagram ${cast.primary.number}: ${cast.primary.name} (${cast.primary.chinese})`,
+    `*${cast.primary.upper} above, ${cast.primary.lower} below*`,
+    "",
+    "```",
+    renderHexagram(cast.lines),
+    "```",
+    "",
+    `**Judgment:** ${cast.primary.judgment}`
+  ];
+  if (cast.relating) {
+    lines.push(
+      "",
+      `## Changing into ${cast.relating.number}: ${cast.relating.name} (${cast.relating.chinese})`,
+      `Changing lines: ${cast.changingLines.join(", ")}`,
+      `**Relating judgment:** ${cast.relating.judgment}`
+    );
+  }
+  return lines.join("\n");
+}
+
 // main.ts
 var MoonPlugin = class extends import_obsidian.Plugin {
   constructor() {
@@ -323,12 +624,20 @@ var MoonPlugin = class extends import_obsidian.Plugin {
       getAspectsData: this.getAspectsData.bind(this),
       getNatalTransits: this.getNatalTransits.bind(this),
       getNatalChart: this.getNatalChart.bind(this),
-      listSavedCharts: this.listSavedCharts.bind(this)
+      listSavedCharts: this.listSavedCharts.bind(this),
+      // Techniques
+      getTodaysKi: this.getTodaysKi.bind(this),
+      getNatalKi: this.getNatalKi.bind(this),
+      getDailyHexagram: this.getDailyHexagram.bind(this),
+      getMidpointTransits: this.getMidpointTransits.bind(this),
+      getNextEclipse: this.getNextEclipse.bind(this),
+      getDashas: this.getDashas.bind(this)
     };
   }
   async onload() {
     await this.loadSettings();
     this.addSettingTab(new MoonSettingTab(this.app, this));
+    window.ObsidianMoon = this.api;
     window.MoonPhasePlugin = this.api;
     this.addCommand({
       id: "current-moon-phase",
@@ -430,9 +739,76 @@ var MoonPlugin = class extends import_obsidian.Plugin {
         }
       });
     }
+    this.addCommand({
+      id: "cast-hexagram",
+      name: "Cast Hexagram",
+      editorCallback: (editor) => {
+        if (!this.settings.techniques.hexagram) {
+          new import_obsidian.Notice('Enable "Hexagram" in the Techniques settings tab first.');
+          return;
+        }
+        editor.replaceSelection(this.getDailyHexagram());
+      }
+    });
+    this.addCommand({
+      id: "todays-ki",
+      name: "Today's 9 Star Ki",
+      editorCallback: (editor) => {
+        if (!this.settings.techniques.ki) {
+          new import_obsidian.Notice('Enable "Ki" in the Techniques settings tab first.');
+          return;
+        }
+        editor.replaceSelection(this.getTodaysKi());
+      }
+    });
+    this.addCommand({
+      id: "natal-ki",
+      name: "Natal 9 Star Ki (selected chart / birth date)",
+      editorCallback: (editor) => {
+        if (!this.settings.techniques.ki) {
+          new import_obsidian.Notice('Enable "Ki" in the Techniques settings tab first.');
+          return;
+        }
+        this.getNatalKi().then((text) => editor.replaceSelection(text)).catch((err) => this.handleError(editor, "natal Ki", err));
+      }
+    });
+    this.addCommand({
+      id: "midpoint-transits",
+      name: "Midpoint Transits (selected chart)",
+      editorCallback: (editor) => {
+        if (!this.settings.techniques.midpoints) {
+          new import_obsidian.Notice('Enable "Midpoints" in the Techniques settings tab first.');
+          return;
+        }
+        this.getMidpointTransits().then((text) => editor.replaceSelection(text)).catch((err) => this.handleError(editor, "midpoint transits", err));
+      }
+    });
+    this.addCommand({
+      id: "next-eclipse",
+      name: "Next Eclipse",
+      editorCallback: (editor) => {
+        if (!this.settings.techniques.eclipses) {
+          new import_obsidian.Notice('Enable "Eclipses" in the Techniques settings tab first.');
+          return;
+        }
+        this.getNextEclipse().then((text) => editor.replaceSelection(text)).catch((err) => this.handleError(editor, "next eclipse", err));
+      }
+    });
+    this.addCommand({
+      id: "dashas",
+      name: "Vimshottari Dashas (selected chart)",
+      editorCallback: (editor) => {
+        if (!this.settings.techniques.dashas) {
+          new import_obsidian.Notice('Enable "Dashas" in the Techniques settings tab first.');
+          return;
+        }
+        this.getDashas().then((text) => editor.replaceSelection(text)).catch((err) => this.handleError(editor, "dashas", err));
+      }
+    });
   }
   onunload() {
     try {
+      delete window.ObsidianMoon;
       delete window.MoonPhasePlugin;
     } catch (e) {
     }
@@ -478,7 +854,7 @@ var MoonPlugin = class extends import_obsidian.Plugin {
   async getNatalTransits(chartName) {
     const name = (chartName != null ? chartName : this.settings.selectedChart).trim();
     if (!name)
-      throw new Error("No saved chart selected \u2014 pick one in Moon Phase settings.");
+      throw new Error("No saved chart selected \u2014 pick one in Obsidian Moon settings.");
     const qs = natalTransitQuery(this.settings);
     return this.req(`/transits/${encodeURIComponent(name)}/now${qs}`);
   }
@@ -502,6 +878,91 @@ var MoonPlugin = class extends import_obsidian.Plugin {
       return filterNatalTransits(data.transits, this.settings);
     }
     return (await this.getAspectsData()).aspects;
+  }
+  /* ── Techniques ── */
+  /** Pure-TS: today's 9 Star Ki sequence. */
+  getTodaysKi() {
+    return formatKiReport(calculateKi(new Date()));
+  }
+  /** Pure-TS: natal Ki + personal cycle for the day. Uses settings.birthDate
+   * (falls back to fetching the selected chart's birth date from Helios). */
+  async getNatalKi() {
+    const birthIso = this.settings.birthDate || await this.fetchChartBirthDate();
+    if (!birthIso) {
+      throw new Error("Set Birth Date in settings, or pick a saved chart that has one.");
+    }
+    const [y, m, d] = birthIso.split("-").map(Number);
+    const birth = new Date(y, m - 1, d);
+    const natal = calculateKi(birth);
+    const cycle = calculatePersonalCycle(natal.yearKi, new Date());
+    return [
+      `# Natal 9 Star Ki \u2014 born ${birthIso}`,
+      "",
+      `**Natal sequence:** ${natal.sequence}`,
+      `**Today's personal cycle:** year ${cycle.personalYear} ${cycle.personalYearInfo.trigram} ${cycle.personalYearInfo.name}, month ${cycle.personalMonth} ${cycle.personalMonthInfo.trigram} ${cycle.personalMonthInfo.name}`,
+      "",
+      formatKiReport(natal)
+    ].join("\n");
+  }
+  /** Pure-TS: cast a hexagram. */
+  getDailyHexagram() {
+    return formatCast(castHexagram());
+  }
+  /** Helios: midpoint transits to a saved chart. */
+  async getMidpointTransits(chartName) {
+    var _a;
+    const name = (chartName != null ? chartName : this.settings.selectedChart).trim();
+    if (!name)
+      throw new Error("Pick a saved chart in Natal Chart settings first.");
+    const data = await this.req(
+      `/midpoint-transits/${encodeURIComponent(name)}?orb=${this.settings.midpointOrb}`
+    );
+    const rows = (_a = data == null ? void 0 : data.midpointTransits) != null ? _a : [];
+    if (rows.length === 0)
+      return `No midpoint transits within ${this.settings.midpointOrb}\xB0 for ${name}.`;
+    return [`# Midpoint transits to ${name}`, "", ...rows.map((r) => `- ${r.transit} ${r.aspect} ${r.midpoint} (orb ${r.orb}\xB0)`)].join("\n");
+  }
+  /** Helios: next eclipse within the configured lookahead window. */
+  async getNextEclipse() {
+    var _a;
+    const start = new Date();
+    const end = new Date();
+    end.setMonth(end.getMonth() + this.settings.eclipseLookaheadMonths);
+    const startIso = start.toISOString().slice(0, 10);
+    const endIso = end.toISOString().slice(0, 10);
+    const data = await this.req(
+      `/eclipses?start=${startIso}&end=${endIso}`
+    );
+    const first = (_a = data == null ? void 0 : data.eclipses) == null ? void 0 : _a[0];
+    if (!first)
+      return `No eclipses in the next ${this.settings.eclipseLookaheadMonths} months.`;
+    const where = first.sign && first.degree ? ` at ${first.degree}\u02DA ${first.sign}` : "";
+    return `Next eclipse: ${first.type} on ${first.date}${where}.`;
+  }
+  /** Helios: Vimshottari dasha periods for a saved chart. */
+  async getDashas(chartName, levels = 2) {
+    var _a;
+    const name = (chartName != null ? chartName : this.settings.selectedChart).trim();
+    if (!name)
+      throw new Error("Pick a saved chart in Natal Chart settings first.");
+    const data = await this.req(
+      `/dashas/${encodeURIComponent(name)}?levels=${levels}`
+    );
+    const rows = (_a = data == null ? void 0 : data.dashas) != null ? _a : [];
+    if (rows.length === 0)
+      return `No dasha data for ${name}.`;
+    return [`# Vimshottari dashas for ${name}`, "", ...rows.map((r) => `- **${r.planet}** ${r.start} \u2192 ${r.end}`)].join("\n");
+  }
+  async fetchChartBirthDate() {
+    var _a, _b;
+    if (!this.settings.selectedChart)
+      return "";
+    try {
+      const chart = await this.getNatalChart();
+      return (_b = (_a = chart == null ? void 0 : chart.birthData) == null ? void 0 : _a.date) != null ? _b : "";
+    } catch (e) {
+      return "";
+    }
   }
   async getWeeklyMajorPhase() {
     var _a, _b;
@@ -566,12 +1027,13 @@ var MoonSettingTab = class extends import_obsidian.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Moon Phase Settings" });
+    containerEl.createEl("h2", { text: "Obsidian Moon" });
     const tabs = [
       { id: "general", label: "General" },
       { id: "chart", label: "Natal Chart" },
       { id: "planets", label: "Planets" },
-      { id: "aspects", label: "Aspects" }
+      { id: "aspects", label: "Aspects" },
+      { id: "techniques", label: "Techniques" }
     ];
     const bar = containerEl.createDiv({ cls: "moon-tab-bar" });
     for (const t of tabs) {
@@ -597,6 +1059,9 @@ var MoonSettingTab = class extends import_obsidian.PluginSettingTab {
         break;
       case "aspects":
         this.renderAspects(body);
+        break;
+      case "techniques":
+        this.renderTechniques(body);
         break;
     }
   }
@@ -830,5 +1295,44 @@ ${lines.join("\n")}`, 12e3);
         await this.plugin.saveSettings();
       }));
     }
+  }
+  /* ── Techniques ── */
+  renderTechniques(c) {
+    c.createEl("p", {
+      cls: "moon-tab-intro",
+      text: "Toggle additional astrological / divinatory techniques. Disabled techniques are hidden from the command palette. Ki and Hexagram run entirely client-side; midpoints / eclipses / dashas hit the Sweph server."
+    });
+    new import_obsidian.Setting(c).setName("9 Star Ki").setDesc("Today's Ki cascade (year/month/third) and natal Ki personal-cycle commands. Pure-TS, no server call.").addToggle((t) => t.setValue(this.plugin.settings.techniques.ki).onChange(async (v) => {
+      this.plugin.settings.techniques.ki = v;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian.Setting(c).setName("Birth date for natal Ki").setDesc("YYYY-MM-DD. Only used when no saved chart is selected. Optional.").addText((t) => t.setPlaceholder("1986-05-01").setValue(this.plugin.settings.birthDate).onChange(async (v) => {
+      this.plugin.settings.birthDate = v.trim();
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian.Setting(c).setName("I Ching Hexagram").setDesc("Three-coin cast \u2192 primary hexagram + relating hexagram (if changing lines). Pure-TS.").addToggle((t) => t.setValue(this.plugin.settings.techniques.hexagram).onChange(async (v) => {
+      this.plugin.settings.techniques.hexagram = v;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian.Setting(c).setName("Midpoints").setDesc("Current transits aspecting natal midpoints. Requires Sweph-server endpoint /midpoint-transits/:name.").addToggle((t) => t.setValue(this.plugin.settings.techniques.midpoints).onChange(async (v) => {
+      this.plugin.settings.techniques.midpoints = v;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian.Setting(c).setName("Midpoint orb (degrees)").setDesc("Tightness of midpoint-transit aspects. Sent as ?orb=N.").addSlider((s) => s.setLimits(0.5, 5, 0.5).setValue(this.plugin.settings.midpointOrb).setDynamicTooltip().onChange(async (v) => {
+      this.plugin.settings.midpointOrb = v;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian.Setting(c).setName("Eclipses").setDesc('"Next Eclipse" command. Requires Sweph-server endpoint /eclipses.').addToggle((t) => t.setValue(this.plugin.settings.techniques.eclipses).onChange(async (v) => {
+      this.plugin.settings.techniques.eclipses = v;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian.Setting(c).setName("Eclipse lookahead (months)").setDesc('How far ahead "Next Eclipse" searches.').addSlider((s) => s.setLimits(1, 24, 1).setValue(this.plugin.settings.eclipseLookaheadMonths).setDynamicTooltip().onChange(async (v) => {
+      this.plugin.settings.eclipseLookaheadMonths = v;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian.Setting(c).setName("Vimshottari Dashas").setDesc("Vedic dasha periods for a saved chart. Requires Sweph-server endpoint /dashas/:name.").addToggle((t) => t.setValue(this.plugin.settings.techniques.dashas).onChange(async (v) => {
+      this.plugin.settings.techniques.dashas = v;
+      await this.plugin.saveSettings();
+    }));
   }
 };

@@ -33,6 +33,7 @@ export function migrateSettings(raw: any): MoonPluginSettings {
             ...raw,
             planets: { ...DEFAULT_SETTINGS.planets, ...(raw.planets || {}) },
             aspects: { ...DEFAULT_SETTINGS.aspects, ...(raw.aspects || {}) },
+            techniques: { ...DEFAULT_SETTINGS.techniques, ...(raw.techniques || {}) },
         };
     }
 

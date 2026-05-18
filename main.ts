@@ -16,6 +16,11 @@ import {
     normalizeBaseUrl, planetGlyph,
 } from './src/pure';
 
+import {
+    calculateKi, calculatePersonalCycle, formatKiReport,
+} from './src/techniques/ki';
+import { castHexagram, formatCast } from './src/techniques/hexagram';
+
 /* ──────────────────────────────────────────────────────────────────────── *
  * Plugin
  * ──────────────────────────────────────────────────────────────────────── */
@@ -36,6 +41,13 @@ export default class MoonPlugin extends Plugin {
         getNatalTransits: this.getNatalTransits.bind(this),
         getNatalChart: this.getNatalChart.bind(this),
         listSavedCharts: this.listSavedCharts.bind(this),
+        // Techniques
+        getTodaysKi: this.getTodaysKi.bind(this),
+        getNatalKi: this.getNatalKi.bind(this),
+        getDailyHexagram: this.getDailyHexagram.bind(this),
+        getMidpointTransits: this.getMidpointTransits.bind(this),
+        getNextEclipse: this.getNextEclipse.bind(this),
+        getDashas: this.getDashas.bind(this),
     };
 
     async onload() {
@@ -43,7 +55,9 @@ export default class MoonPlugin extends Plugin {
 
         this.addSettingTab(new MoonSettingTab(this.app, this));
 
-        // Expose for Templater
+        // Expose for Templater. ObsidianMoon is the new canonical name;
+        // MoonPhasePlugin is kept as an alias so existing snippets keep working.
+        (window as any).ObsidianMoon = this.api;
         (window as any).MoonPhasePlugin = this.api;
 
         /* ── Phase / Moon ── */
@@ -159,10 +173,91 @@ export default class MoonPlugin extends Plugin {
                 },
             });
         }
+
+        /* ── Techniques (pure-TS + Helios-backed) ── */
+
+        this.addCommand({
+            id: 'cast-hexagram',
+            name: 'Cast Hexagram',
+            editorCallback: (editor: Editor) => {
+                if (!this.settings.techniques.hexagram) {
+                    new Notice('Enable "Hexagram" in the Techniques settings tab first.');
+                    return;
+                }
+                editor.replaceSelection(this.getDailyHexagram());
+            },
+        });
+
+        this.addCommand({
+            id: 'todays-ki',
+            name: "Today's 9 Star Ki",
+            editorCallback: (editor: Editor) => {
+                if (!this.settings.techniques.ki) {
+                    new Notice('Enable "Ki" in the Techniques settings tab first.');
+                    return;
+                }
+                editor.replaceSelection(this.getTodaysKi());
+            },
+        });
+
+        this.addCommand({
+            id: 'natal-ki',
+            name: 'Natal 9 Star Ki (selected chart / birth date)',
+            editorCallback: (editor: Editor) => {
+                if (!this.settings.techniques.ki) {
+                    new Notice('Enable "Ki" in the Techniques settings tab first.');
+                    return;
+                }
+                this.getNatalKi().then(text => editor.replaceSelection(text))
+                    .catch(err => this.handleError(editor, 'natal Ki', err));
+            },
+        });
+
+        this.addCommand({
+            id: 'midpoint-transits',
+            name: 'Midpoint Transits (selected chart)',
+            editorCallback: (editor: Editor) => {
+                if (!this.settings.techniques.midpoints) {
+                    new Notice('Enable "Midpoints" in the Techniques settings tab first.');
+                    return;
+                }
+                this.getMidpointTransits().then(text => editor.replaceSelection(text))
+                    .catch(err => this.handleError(editor, 'midpoint transits', err));
+            },
+        });
+
+        this.addCommand({
+            id: 'next-eclipse',
+            name: 'Next Eclipse',
+            editorCallback: (editor: Editor) => {
+                if (!this.settings.techniques.eclipses) {
+                    new Notice('Enable "Eclipses" in the Techniques settings tab first.');
+                    return;
+                }
+                this.getNextEclipse().then(text => editor.replaceSelection(text))
+                    .catch(err => this.handleError(editor, 'next eclipse', err));
+            },
+        });
+
+        this.addCommand({
+            id: 'dashas',
+            name: 'Vimshottari Dashas (selected chart)',
+            editorCallback: (editor: Editor) => {
+                if (!this.settings.techniques.dashas) {
+                    new Notice('Enable "Dashas" in the Techniques settings tab first.');
+                    return;
+                }
+                this.getDashas().then(text => editor.replaceSelection(text))
+                    .catch(err => this.handleError(editor, 'dashas', err));
+            },
+        });
     }
 
     onunload() {
-        try { delete (window as any).MoonPhasePlugin; } catch { /* ignore */ }
+        try {
+            delete (window as any).ObsidianMoon;
+            delete (window as any).MoonPhasePlugin;
+        } catch { /* ignore */ }
     }
 
     /* ── Settings IO ── */
@@ -210,7 +305,7 @@ export default class MoonPlugin extends Plugin {
 
     async getNatalTransits(chartName?: string): Promise<NatalTransitsResponse> {
         const name = (chartName ?? this.settings.selectedChart).trim();
-        if (!name) throw new Error('No saved chart selected — pick one in Moon Phase settings.');
+        if (!name) throw new Error('No saved chart selected — pick one in Obsidian Moon settings.');
         const qs = natalTransitQuery(this.settings);
         return this.req<NatalTransitsResponse>(`/transits/${encodeURIComponent(name)}/now${qs}`);
     }
@@ -237,6 +332,86 @@ export default class MoonPlugin extends Plugin {
             return filterNatalTransits(data.transits, this.settings);
         }
         return (await this.getAspectsData()).aspects;
+    }
+
+    /* ── Techniques ── */
+
+    /** Pure-TS: today's 9 Star Ki sequence. */
+    getTodaysKi(): string {
+        return formatKiReport(calculateKi(new Date()));
+    }
+
+    /** Pure-TS: natal Ki + personal cycle for the day. Uses settings.birthDate
+     * (falls back to fetching the selected chart's birth date from Helios). */
+    async getNatalKi(): Promise<string> {
+        const birthIso = this.settings.birthDate || await this.fetchChartBirthDate();
+        if (!birthIso) {
+            throw new Error('Set Birth Date in settings, or pick a saved chart that has one.');
+        }
+        const [y, m, d] = birthIso.split('-').map(Number);
+        const birth = new Date(y, m - 1, d);
+        const natal = calculateKi(birth);
+        const cycle = calculatePersonalCycle(natal.yearKi, new Date());
+        return [
+            `# Natal 9 Star Ki — born ${birthIso}`,
+            '',
+            `**Natal sequence:** ${natal.sequence}`,
+            `**Today's personal cycle:** year ${cycle.personalYear} ${cycle.personalYearInfo.trigram} ${cycle.personalYearInfo.name}, month ${cycle.personalMonth} ${cycle.personalMonthInfo.trigram} ${cycle.personalMonthInfo.name}`,
+            '',
+            formatKiReport(natal),
+        ].join('\n');
+    }
+
+    /** Pure-TS: cast a hexagram. */
+    getDailyHexagram(): string {
+        return formatCast(castHexagram());
+    }
+
+    /** Helios: midpoint transits to a saved chart. */
+    async getMidpointTransits(chartName?: string): Promise<string> {
+        const name = (chartName ?? this.settings.selectedChart).trim();
+        if (!name) throw new Error('Pick a saved chart in Natal Chart settings first.');
+        const data = await this.req<{ midpointTransits?: Array<{ midpoint: string; transit: string; aspect: string; orb: string }> }>(
+            `/midpoint-transits/${encodeURIComponent(name)}?orb=${this.settings.midpointOrb}`);
+        const rows = data?.midpointTransits ?? [];
+        if (rows.length === 0) return `No midpoint transits within ${this.settings.midpointOrb}° for ${name}.`;
+        return [`# Midpoint transits to ${name}`, '', ...rows.map(r =>
+            `- ${r.transit} ${r.aspect} ${r.midpoint} (orb ${r.orb}°)`)].join('\n');
+    }
+
+    /** Helios: next eclipse within the configured lookahead window. */
+    async getNextEclipse(): Promise<string> {
+        const start = new Date();
+        const end = new Date();
+        end.setMonth(end.getMonth() + this.settings.eclipseLookaheadMonths);
+        const startIso = start.toISOString().slice(0, 10);
+        const endIso = end.toISOString().slice(0, 10);
+        const data = await this.req<{ eclipses?: Array<{ date: string; type: string; sign?: string; degree?: string }> }>(
+            `/eclipses?start=${startIso}&end=${endIso}`);
+        const first = data?.eclipses?.[0];
+        if (!first) return `No eclipses in the next ${this.settings.eclipseLookaheadMonths} months.`;
+        const where = first.sign && first.degree ? ` at ${first.degree}˚ ${first.sign}` : '';
+        return `Next eclipse: ${first.type} on ${first.date}${where}.`;
+    }
+
+    /** Helios: Vimshottari dasha periods for a saved chart. */
+    async getDashas(chartName?: string, levels = 2): Promise<string> {
+        const name = (chartName ?? this.settings.selectedChart).trim();
+        if (!name) throw new Error('Pick a saved chart in Natal Chart settings first.');
+        const data = await this.req<{ dashas?: Array<{ planet: string; start: string; end: string; sub?: any[] }> }>(
+            `/dashas/${encodeURIComponent(name)}?levels=${levels}`);
+        const rows = data?.dashas ?? [];
+        if (rows.length === 0) return `No dasha data for ${name}.`;
+        return [`# Vimshottari dashas for ${name}`, '', ...rows.map(r =>
+            `- **${r.planet}** ${r.start} → ${r.end}`)].join('\n');
+    }
+
+    private async fetchChartBirthDate(): Promise<string> {
+        if (!this.settings.selectedChart) return '';
+        try {
+            const chart = await this.getNatalChart() as any;
+            return chart?.birthData?.date ?? '';
+        } catch { return ''; }
     }
 
     async getWeeklyMajorPhase(): Promise<{ date: string; moonPhase: string; moonSign: string } | null> {
@@ -284,7 +459,7 @@ export default class MoonPlugin extends Plugin {
  * Settings UI — tabbed, follows the Periodic Ritual pattern
  * ──────────────────────────────────────────────────────────────────────── */
 
-type TabId = 'general' | 'chart' | 'planets' | 'aspects';
+type TabId = 'general' | 'chart' | 'planets' | 'aspects' | 'techniques';
 
 interface NominatimResult {
     display_name: string;
@@ -315,13 +490,14 @@ class MoonSettingTab extends PluginSettingTab {
     display(): void {
         const { containerEl } = this;
         containerEl.empty();
-        containerEl.createEl('h2', { text: 'Moon Phase Settings' });
+        containerEl.createEl('h2', { text: 'Obsidian Moon' });
 
         const tabs: Array<{ id: TabId; label: string }> = [
             { id: 'general', label: 'General' },
             { id: 'chart', label: 'Natal Chart' },
             { id: 'planets', label: 'Planets' },
             { id: 'aspects', label: 'Aspects' },
+            { id: 'techniques', label: 'Techniques' },
         ];
 
         const bar = containerEl.createDiv({ cls: 'moon-tab-bar' });
@@ -338,10 +514,11 @@ class MoonSettingTab extends PluginSettingTab {
 
         const body = containerEl.createDiv({ cls: 'moon-tab-content' });
         switch (this.activeTab) {
-            case 'general': this.renderGeneral(body); break;
-            case 'chart':   this.renderChart(body); break;
-            case 'planets': this.renderPlanets(body); break;
-            case 'aspects': this.renderAspects(body); break;
+            case 'general':    this.renderGeneral(body); break;
+            case 'chart':      this.renderChart(body); break;
+            case 'planets':    this.renderPlanets(body); break;
+            case 'aspects':    this.renderAspects(body); break;
+            case 'techniques': this.renderTechniques(body); break;
         }
     }
 
@@ -658,5 +835,98 @@ class MoonSettingTab extends PluginSettingTab {
                         await this.plugin.saveSettings();
                     }));
         }
+    }
+
+    /* ── Techniques ── */
+    private renderTechniques(c: HTMLElement) {
+        c.createEl('p', {
+            cls: 'moon-tab-intro',
+            text: 'Toggle additional astrological / divinatory techniques. Disabled techniques are hidden from the command palette. Ki and Hexagram run entirely client-side; midpoints / eclipses / dashas hit the Sweph server.',
+        });
+
+        new Setting(c)
+            .setName('9 Star Ki')
+            .setDesc('Today\'s Ki cascade (year/month/third) and natal Ki personal-cycle commands. Pure-TS, no server call.')
+            .addToggle(t => t
+                .setValue(this.plugin.settings.techniques.ki)
+                .onChange(async (v) => {
+                    this.plugin.settings.techniques.ki = v;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(c)
+            .setName('Birth date for natal Ki')
+            .setDesc('YYYY-MM-DD. Only used when no saved chart is selected. Optional.')
+            .addText(t => t
+                .setPlaceholder('1986-05-01')
+                .setValue(this.plugin.settings.birthDate)
+                .onChange(async (v) => {
+                    this.plugin.settings.birthDate = v.trim();
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(c)
+            .setName('I Ching Hexagram')
+            .setDesc('Three-coin cast → primary hexagram + relating hexagram (if changing lines). Pure-TS.')
+            .addToggle(t => t
+                .setValue(this.plugin.settings.techniques.hexagram)
+                .onChange(async (v) => {
+                    this.plugin.settings.techniques.hexagram = v;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(c)
+            .setName('Midpoints')
+            .setDesc('Current transits aspecting natal midpoints. Requires Sweph-server endpoint /midpoint-transits/:name.')
+            .addToggle(t => t
+                .setValue(this.plugin.settings.techniques.midpoints)
+                .onChange(async (v) => {
+                    this.plugin.settings.techniques.midpoints = v;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(c)
+            .setName('Midpoint orb (degrees)')
+            .setDesc('Tightness of midpoint-transit aspects. Sent as ?orb=N.')
+            .addSlider(s => s
+                .setLimits(0.5, 5, 0.5)
+                .setValue(this.plugin.settings.midpointOrb)
+                .setDynamicTooltip()
+                .onChange(async (v) => {
+                    this.plugin.settings.midpointOrb = v;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(c)
+            .setName('Eclipses')
+            .setDesc('"Next Eclipse" command. Requires Sweph-server endpoint /eclipses.')
+            .addToggle(t => t
+                .setValue(this.plugin.settings.techniques.eclipses)
+                .onChange(async (v) => {
+                    this.plugin.settings.techniques.eclipses = v;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(c)
+            .setName('Eclipse lookahead (months)')
+            .setDesc('How far ahead "Next Eclipse" searches.')
+            .addSlider(s => s
+                .setLimits(1, 24, 1)
+                .setValue(this.plugin.settings.eclipseLookaheadMonths)
+                .setDynamicTooltip()
+                .onChange(async (v) => {
+                    this.plugin.settings.eclipseLookaheadMonths = v;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(c)
+            .setName('Vimshottari Dashas')
+            .setDesc('Vedic dasha periods for a saved chart. Requires Sweph-server endpoint /dashas/:name.')
+            .addToggle(t => t
+                .setValue(this.plugin.settings.techniques.dashas)
+                .onChange(async (v) => {
+                    this.plugin.settings.techniques.dashas = v;
+                    await this.plugin.saveSettings();
+                }));
     }
 }

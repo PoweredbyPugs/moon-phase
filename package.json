@@ -1,7 +1,7 @@
 {
   "name": "obsidian-moon",
-  "version": "1.1.0",
-  "description": "Displays current moon phase, planetary positions, aspects, and natal transits",
+  "version": "1.2.0",
+  "description": "Obsidian Moon — astrology & divination toolkit (moon phase, planets, aspects, natal transits, 9 Star Ki, I Ching, midpoints, eclipses, dashas) over a Sweph-server backend",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
